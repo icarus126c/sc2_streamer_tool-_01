@@ -1,4 +1,5 @@
 const http = require("http");
+const https = require("https");
 const fs = require("fs");
 const path = require("path");
 const { spawnSync } = require("child_process");
@@ -7,13 +8,16 @@ const port = Number(process.env.PORT || 27392);
 const host = "127.0.0.1";
 const dataPath = path.join(__dirname, "livehime-stats-data.json");
 const replayConfigPath = path.join(__dirname, "replay-config.json");
+const mmrApiConfigPath = path.join(__dirname, "mmr-api-config.json");
 
 let state = loadState();
 const clients = new Set();
 const replayConfig = loadReplayConfig();
+const mmrApiConfig = loadMmrApiConfig();
 const seenReplayKeys = new Set(state.processedReplays || []);
 const seenReplayPaths = new Set(state.processedReplayPaths || []);
 const pendingReplayChecks = new Map();
+let activeMmrApiRefresh = null;
 
 const server = http.createServer((request, response) => {
   const url = new URL(request.url, `http://${host}:${port}`);
@@ -78,6 +82,7 @@ const server = http.createServer((request, response) => {
       if (action === "reset") resetStats();
       if (action === "scanLatest") scanLatestReplay(true);
       if (action === "clearPending") clearPendingReplay();
+      if (action === "refreshMmrApi") refreshMmrFromApi({ force: true });
       if (action === "title") {
         state.title = String(body.title || "星灵折跃频道").slice(0, 32);
         state.subtitle = String(body.subtitle || "本次直播战况").slice(0, 48);
@@ -100,6 +105,7 @@ server.listen(port, host, () => {
   console.log(`直播姬网页源: http://${host}:${port}/view`);
   console.log(`控制页面:     http://${host}:${port}/control`);
   startReplayWatcher();
+  startMmrApiRefresher();
 });
 
 function defaults() {
@@ -118,6 +124,7 @@ function defaults() {
     pendingReplays: [],
     replayHistory: [],
     lastMatch: null,
+    mmrApi: defaultMmrApiState(),
     overlay: defaultOverlay()
   };
 }
@@ -144,6 +151,20 @@ function defaultOverlay() {
   };
 }
 
+function defaultMmrApiState() {
+  return {
+    provider: "sc2pulse",
+    status: "idle",
+    message: "",
+    lastUpdatedAt: null,
+    lastTriedAt: null,
+    toonHandle: "",
+    race: "",
+    rating: null,
+    source: ""
+  };
+}
+
 function normalizeState(input) {
   const normalized = { ...defaults(), ...input };
   normalized.tickerText = String(input.tickerText ?? defaults().tickerText).slice(0, 160);
@@ -153,6 +174,7 @@ function normalizeState(input) {
   normalized.processedReplays = Array.isArray(normalized.processedReplays) ? normalized.processedReplays : [];
   normalized.processedReplayPaths = Array.isArray(normalized.processedReplayPaths) ? normalized.processedReplayPaths : [];
   normalized.replayHistory = Array.isArray(normalized.replayHistory) ? normalized.replayHistory : [];
+  normalized.mmrApi = { ...defaultMmrApiState(), ...(input.mmrApi || {}) };
   const processedKeys = new Set(normalized.processedReplays);
   const processedPaths = new Set(normalized.processedReplayPaths);
   const historyReplayKeys = new Set(normalized.history.map((entry) => entry?.replay?.key).filter(Boolean));
@@ -208,6 +230,7 @@ function addResult(result, replayOverride = null) {
     rememberReplay(replay.key);
     rememberReplayPath(replay.path);
   }
+  if (replay?.parsed && mmrApiConfig.updateAfterReplay) refreshMmrFromApi({ match: replay.parsed, force: true });
   updateReplaySubtitle();
 }
 
@@ -267,6 +290,8 @@ function snapshot() {
     lastMatch: state.lastMatch,
     tickerText: state.tickerText,
     overlay: state.overlay,
+    mmrApi: state.mmrApi,
+    mmrApiEnabled: mmrApiConfig.enabled,
     overlayLine: buildOverlayLine(),
     matchDetail: buildDetailMatchText(state.lastMatch),
     replayWatching: replayConfig.enabled ? replayConfig.watchRoots : []
@@ -323,6 +348,30 @@ function loadReplayConfig() {
     return config;
   } catch {
     fs.writeFileSync(replayConfigPath, JSON.stringify(defaults, null, 2), "utf8");
+    return defaults;
+  }
+}
+
+function loadMmrApiConfig() {
+  const defaults = {
+    enabled: false,
+    provider: "sc2pulse",
+    baseUrl: "https://sc2pulse.nephest.com/sc2",
+    queue: "LOTV_1V1",
+    race: "auto",
+    toonHandle: "",
+    preferReplaySelf: true,
+    updateAfterReplay: true,
+    refreshMs: 120000,
+    timeoutMs: 12000,
+    userAgent: "sc2-livehime-stats-overlay"
+  };
+  try {
+    const config = { ...defaults, ...readJsonFile(mmrApiConfigPath) };
+    fs.writeFileSync(mmrApiConfigPath, JSON.stringify(config, null, 2), "utf8");
+    return config;
+  } catch {
+    fs.writeFileSync(mmrApiConfigPath, JSON.stringify(defaults, null, 2), "utf8");
     return defaults;
   }
 }
@@ -517,6 +566,181 @@ function buildOverlayLine() {
 
 function formatScore(score) {
   return `${Number(score?.wins || 0)}-${Number(score?.losses || 0)}`;
+}
+
+function startMmrApiRefresher() {
+  if (!mmrApiConfig.enabled) {
+    state.mmrApi = { ...state.mmrApi, status: "disabled", message: "线上 MMR API 未启用" };
+    return;
+  }
+  refreshMmrFromApi({ force: true });
+  const refreshMs = clampNumber(mmrApiConfig.refreshMs, 30000, 1800000);
+  setInterval(() => refreshMmrFromApi(), refreshMs);
+}
+
+function refreshMmrFromApi(options = {}) {
+  if (!mmrApiConfig.enabled) {
+    state.mmrApi = { ...state.mmrApi, status: "disabled", message: "线上 MMR API 未启用" };
+    return null;
+  }
+  if (activeMmrApiRefresh) return activeMmrApiRefresh;
+  const match = options.match || state.lastMatch;
+  const toonHandle = resolveMmrApiToonHandle(match);
+  const race = resolveMmrApiRace(match);
+  state.mmrApi = {
+    ...state.mmrApi,
+    provider: mmrApiConfig.provider,
+    status: "loading",
+    message: toonHandle ? "正在刷新线上 MMR..." : "缺少 toonHandle，等待下一盘录像识别账号",
+    lastTriedAt: Date.now(),
+    toonHandle,
+    race
+  };
+  broadcast();
+  if (!toonHandle) {
+    state.mmrApi.status = "missing-account";
+    saveState();
+    return null;
+  }
+  activeMmrApiRefresh = fetchSc2PulseMmr(toonHandle, race)
+    .then((result) => {
+      if (!result?.rating) {
+        state.mmrApi = {
+          ...state.mmrApi,
+          status: "not-found",
+          message: "线上 API 暂时没有这个账号的天梯数据，已保留原 MMR",
+          lastTriedAt: Date.now(),
+          source: "sc2pulse"
+        };
+        return;
+      }
+      state.overlay.currentMmr = String(result.rating);
+      state.mmrApi = {
+        ...state.mmrApi,
+        status: "ok",
+        message: `线上 MMR 已更新：${result.rating}`,
+        lastUpdatedAt: Date.now(),
+        lastTriedAt: Date.now(),
+        toonHandle,
+        race: result.race || race,
+        rating: result.rating,
+        source: "sc2pulse",
+        lastPlayed: result.lastPlayed || null
+      };
+    })
+    .catch((error) => {
+      state.mmrApi = {
+        ...state.mmrApi,
+        status: "error",
+        message: `线上 MMR 刷新失败：${error.message}`,
+        lastTriedAt: Date.now(),
+        source: "sc2pulse"
+      };
+    })
+    .finally(() => {
+      activeMmrApiRefresh = null;
+      saveState();
+      broadcast();
+    });
+  return activeMmrApiRefresh;
+}
+
+function resolveMmrApiToonHandle(match) {
+  if (mmrApiConfig.toonHandle) return String(mmrApiConfig.toonHandle).trim();
+  if (!mmrApiConfig.preferReplaySelf) return "";
+  const self = match?.selfPlayers?.[0] || null;
+  const region = normalizeRegionId(self?.region);
+  const realm = Number(self?.realm || 1);
+  const toonId = Number(self?.toonId || match?.folderToonId || 0);
+  if (!region || !toonId) return "";
+  return `${region}-S2-${realm}-${toonId}`;
+}
+
+function resolveMmrApiRace(match) {
+  const configured = String(mmrApiConfig.race || "auto").toUpperCase();
+  if (["TERRAN", "PROTOSS", "ZERG", "RANDOM"].includes(configured)) return configured;
+  return raceNameToApi(match?.selfPlayers?.[0]?.race) || "";
+}
+
+function normalizeRegionId(region) {
+  const value = String(region || "").toUpperCase();
+  if (value === "US") return 1;
+  if (value === "EU") return 2;
+  if (value === "KR") return 3;
+  if (value === "CN") return 5;
+  const number = Number(region);
+  return [1, 2, 3, 5].includes(number) ? number : 0;
+}
+
+function raceNameToApi(race) {
+  const short = shortRace(race);
+  if (short === "T") return "TERRAN";
+  if (short === "P") return "PROTOSS";
+  if (short === "Z") return "ZERG";
+  if (short === "R") return "RANDOM";
+  return "";
+}
+
+function raceCodeFromTeam(team) {
+  const id = typeof team.legacyId === "string" ? team.legacyId : team.legacyId?.id;
+  const code = String(id || "").split(".").pop();
+  const mapping = { 1: "TERRAN", 2: "PROTOSS", 3: "ZERG", 4: "RANDOM" };
+  if (mapping[code]) return mapping[code];
+  const raceGames = team.members?.[0]?.raceGames || {};
+  return Object.entries(raceGames).sort((a, b) => Number(b[1]) - Number(a[1]))[0]?.[0] || "";
+}
+
+async function fetchSc2PulseMmr(toonHandle, race) {
+  const baseUrl = String(mmrApiConfig.baseUrl || "https://sc2pulse.nephest.com/sc2").replace(/\/$/, "");
+  const url = new URL(`${baseUrl}/api/character-teams`);
+  url.searchParams.set("toonHandle", toonHandle);
+  url.searchParams.set("queue", mmrApiConfig.queue || "LOTV_1V1");
+  url.searchParams.set("limit", "12");
+  const teams = await fetchJson(url.toString(), {
+    timeoutMs: clampNumber(mmrApiConfig.timeoutMs, 3000, 30000),
+    userAgent: mmrApiConfig.userAgent
+  });
+  if (!Array.isArray(teams) || teams.length === 0) return null;
+  const ranked = teams
+    .map((team) => ({ team, race: raceCodeFromTeam(team) }))
+    .filter((entry) => Number.isFinite(Number(entry.team.rating)))
+    .sort((a, b) => Date.parse(b.team.lastPlayed || 0) - Date.parse(a.team.lastPlayed || 0));
+  const selected = ranked.find((entry) => race && entry.race === race) || ranked[0];
+  if (!selected) return null;
+  return {
+    rating: Number(selected.team.rating),
+    race: selected.race,
+    lastPlayed: selected.team.lastPlayed || null
+  };
+}
+
+function fetchJson(url, options = {}) {
+  return new Promise((resolve, reject) => {
+    const request = https.get(url, {
+      headers: { "User-Agent": options.userAgent || "sc2-livehime-stats-overlay" }
+    }, (response) => {
+      let raw = "";
+      response.setEncoding("utf8");
+      response.on("data", (chunk) => {
+        raw += chunk;
+      });
+      response.on("end", () => {
+        if (response.statusCode < 200 || response.statusCode >= 300) {
+          reject(new Error(`HTTP ${response.statusCode}`));
+          return;
+        }
+        try {
+          resolve(JSON.parse(raw));
+        } catch (error) {
+          reject(error);
+        }
+      });
+    });
+    request.setTimeout(options.timeoutMs || 12000, () => {
+      request.destroy(new Error("timeout"));
+    });
+    request.on("error", reject);
+  });
 }
 
 function clampNumber(value, min, max) {
@@ -799,7 +1023,7 @@ function renderPage(control) {
       .value { margin-top: 7px; font-size: 26px; line-height: 1; font-weight: 800; font-variant-numeric: tabular-nums; white-space: nowrap; }
       .good { color: #78ffc1; }
       .bad { color: #ff7891; }
-      .controls { display: ${control ? "grid" : "none"}; grid-template-columns: repeat(7, 1fr); gap: 10px; width: 1240px; }
+      .controls { display: ${control ? "grid" : "none"}; grid-template-columns: repeat(8, 1fr); gap: 10px; width: 1240px; }
       button, input {
         min-height: 44px;
         color: #eefcff;
@@ -865,6 +1089,7 @@ function renderPage(control) {
         <button data-action="reset">重置 R</button>
         <button data-action="scanLatest">扫最新</button>
         <button data-action="clearPending">忽略回放</button>
+        <button data-action="refreshMmrApi">刷新线上MMR</button>
       </section>
       <section class="fields">
         <input id="titleInput" placeholder="标题" />
@@ -897,6 +1122,7 @@ function renderPage(control) {
         <span id="chromeOpacityLabel">透明度 100%</span>
       </section>
       <div class="replay-line" id="replayLine">回放监听启动中...</div>
+      <div class="replay-line" id="mmrApiLine">线上 MMR API 未启用</div>
       <div class="note">直播姬网页源填 /view；这个控制页填 /control。新回放出现后会显示“回放待确认”，按 W/L 会把这场记成胜/负。</div>
     </main>
     <script>
@@ -958,6 +1184,10 @@ function renderPage(control) {
             ? "待确认回放：" + data.pendingReplay.name
             : data.overlayLine || "监听目录：" + (data.replayWatching?.join("；") || "未启用");
         }
+        const mmrApiLine = document.getElementById("mmrApiLine");
+        if (mmrApiLine) {
+          mmrApiLine.textContent = formatMmrApiLine(data);
+        }
         const matchStrip = document.getElementById("matchStrip");
         matchStrip.textContent = data.overlayLine || "当前MMR -- | vT 0-0 | vZ 0-0 | vP 0-0";
         const pauseBtn = document.getElementById("pauseBtn");
@@ -978,6 +1208,14 @@ function renderPage(control) {
         ticker.dataset.static = shouldScroll ? "false" : "true";
         ticker.style.setProperty("--ticker-offset", shouldScroll ? "100%" : "0");
         ticker.style.setProperty("--ticker-speed", Math.max(12, Math.min(36, value.length * 0.55)) + "s");
+      }
+      function formatMmrApiLine(data) {
+        if (!data.mmrApiEnabled) return "线上 MMR API：未启用（编辑 mmr-api-config.json 后重启）";
+        const api = data.mmrApi || {};
+        const base = "线上 MMR API：" + (api.message || api.status || "等待刷新");
+        const account = api.toonHandle ? " | " + api.toonHandle : "";
+        const race = api.race ? " | " + api.race : "";
+        return base + account + race;
       }
       function fillOverlayInputs(overlay) {
         const map = {

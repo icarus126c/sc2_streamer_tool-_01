@@ -1,5 +1,6 @@
 livehime-stats-data.json
 replay-config.json
+mmr-api-config.json
 *.log
 *.tmp
 node_modules/

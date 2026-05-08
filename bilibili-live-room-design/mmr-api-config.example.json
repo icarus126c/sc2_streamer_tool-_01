@@ -1,0 +1,13 @@
+{
+  "enabled": true,
+  "provider": "sc2pulse",
+  "baseUrl": "https://sc2pulse.nephest.com/sc2",
+  "queue": "LOTV_1V1",
+  "race": "auto",
+  "toonHandle": "",
+  "preferReplaySelf": true,
+  "updateAfterReplay": true,
+  "refreshMs": 120000,
+  "timeoutMs": 12000,
+  "userAgent": "sc2-livehime-stats-overlay"
+}
