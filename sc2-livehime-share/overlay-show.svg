@@ -1,0 +1,79 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="3840" height="2160" viewBox="0 0 3840 2160">
+  <defs>
+    <filter id="cyanGlow" x="-80%" y="-80%" width="260%" height="260%">
+      <feGaussianBlur stdDeviation="5" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <filter id="goldGlow" x="-80%" y="-80%" width="260%" height="260%">
+      <feGaussianBlur stdDeviation="4" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <pattern id="hex" width="56" height="48" patternUnits="userSpaceOnUse">
+      <path d="M14 1 L42 1 L55 24 L42 47 L14 47 L1 24 Z" fill="none" stroke="#33d7ff" stroke-opacity=".16" stroke-width="2"/>
+    </pattern>
+    <linearGradient id="panelFill" x1="0" x2="1">
+      <stop offset="0" stop-color="#02070b" stop-opacity=".74"/>
+      <stop offset=".52" stop-color="#07161a" stop-opacity=".48"/>
+      <stop offset="1" stop-color="#02070b" stop-opacity=".12"/>
+    </linearGradient>
+    <linearGradient id="cyanLine" x1="0" x2="1">
+      <stop offset="0" stop-color="#20d8ff" stop-opacity="0"/>
+      <stop offset=".2" stop-color="#20d8ff" stop-opacity=".9"/>
+      <stop offset=".72" stop-color="#d5fff9" stop-opacity=".65"/>
+      <stop offset="1" stop-color="#20d8ff" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="goldLine" x1="0" x2="1">
+      <stop offset="0" stop-color="#ffd68a" stop-opacity="0"/>
+      <stop offset=".22" stop-color="#ffd68a" stop-opacity=".9"/>
+      <stop offset=".74" stop-color="#fff3cf" stop-opacity=".60"/>
+      <stop offset="1" stop-color="#ffd68a" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+
+  <g id="top-left-room-plate">
+    <path d="M44 48 H632 L724 140 V230 L682 272 H44 Z" fill="url(#panelFill)" stroke="#c9a566" stroke-opacity=".72" stroke-width="3"/>
+    <path d="M64 68 H612 L694 150 V218 L666 246 H64 Z" fill="url(#hex)" opacity=".92"/>
+    <path d="M80 82 H534" stroke="url(#cyanLine)" stroke-width="7" filter="url(#cyanGlow)"/>
+    <path d="M62 270 H650" stroke="url(#goldLine)" stroke-width="4" filter="url(#goldGlow)"/>
+    <text x="84" y="150" fill="#e9fbff" font-family="Microsoft YaHei, Arial, sans-serif" font-size="52" font-weight="700">星灵折跃频道</text>
+    <text x="88" y="208" fill="#7defff" font-family="Microsoft YaHei, Arial, sans-serif" font-size="28" opacity=".88">舰队通讯已连接</text>
+    <circle cx="650" cy="122" r="28" fill="none" stroke="#34e4ff" stroke-width="5" opacity=".9" filter="url(#cyanGlow)"/>
+    <circle cx="650" cy="122" r="10" fill="#34e4ff" opacity=".85"/>
+  </g>
+
+  <g id="right-status">
+    <path d="M2790 96 H3690 L3740 146 V230 H2834 L2790 186 Z" fill="#02070b" fill-opacity=".38" stroke="#33d7ff" stroke-opacity=".52" stroke-width="3"/>
+    <path d="M2824 120 H3660" stroke="url(#cyanLine)" stroke-width="4" filter="url(#cyanGlow)"/>
+    <text x="2846" y="182" fill="#e8fbff" font-family="Microsoft YaHei, Arial, sans-serif" font-size="34" font-weight="700">舰队状态</text>
+    <text x="3060" y="182" fill="#ffd991" font-family="Microsoft YaHei, Arial, sans-serif" font-size="30">APM --</text>
+    <text x="3212" y="182" fill="#7defff" font-family="Microsoft YaHei, Arial, sans-serif" font-size="30">战绩 0-0</text>
+    <text x="3388" y="182" fill="#f2f7ff" font-family="Microsoft YaHei, Arial, sans-serif" font-size="30">目标 上分</text>
+  </g>
+
+  <g id="bottom-comms-panel">
+    <path d="M760 1680 H2680 L2752 1752 V2052 L2704 2100 H812 L760 2048 Z" fill="#02070b" fill-opacity=".46" stroke="#c9a566" stroke-opacity=".66" stroke-width="4"/>
+    <path d="M800 1718 H2636 L2708 1790 V2014 L2670 2052 H838 L800 2014 Z" fill="url(#hex)" opacity=".75"/>
+    <path d="M842 1736 H2588" stroke="url(#cyanLine)" stroke-width="6" filter="url(#cyanGlow)"/>
+    <path d="M842 2048 H2632" stroke="url(#goldLine)" stroke-width="4" filter="url(#goldGlow)"/>
+    <text x="850" y="1812" fill="#e9fbff" font-family="Microsoft YaHei, Arial, sans-serif" font-size="42" font-weight="700">舰队通讯频道</text>
+    <text x="850" y="1886" fill="#7defff" font-family="Microsoft YaHei, Arial, sans-serif" font-size="32">弹幕精选 / BGM / 今日目标可以放这里</text>
+    <text x="850" y="1952" fill="#ffd991" font-family="Microsoft YaHei, Arial, sans-serif" font-size="30">新的舰队成员：---</text>
+    <text x="850" y="2008" fill="#f2f7ff" font-family="Microsoft YaHei, Arial, sans-serif" font-size="28" opacity=".86">今日战术：先活下来，再考虑帅</text>
+    <circle cx="2638" cy="1804" r="44" fill="none" stroke="#34e4ff" stroke-width="6" opacity=".88" filter="url(#cyanGlow)"/>
+    <circle cx="2638" cy="1804" r="18" fill="#34e4ff" opacity=".74"/>
+  </g>
+
+  <g id="right-alert-rail">
+    <path d="M3168 460 H3740 L3782 502 V760 L3744 798 H3168 Z" fill="#02070b" fill-opacity=".35" stroke="#33d7ff" stroke-opacity=".45" stroke-width="3"/>
+    <path d="M3198 492 H3684" stroke="url(#cyanLine)" stroke-width="4" filter="url(#cyanGlow)"/>
+    <text x="3212" y="558" fill="#e8fbff" font-family="Microsoft YaHei, Arial, sans-serif" font-size="34" font-weight="700">折跃提示</text>
+    <text x="3212" y="620" fill="#7defff" font-family="Microsoft YaHei, Arial, sans-serif" font-size="28">关注 / 礼物 / 上舰</text>
+    <text x="3212" y="684" fill="#ffd991" font-family="Microsoft YaHei, Arial, sans-serif" font-size="28">提示动画建议放这里</text>
+  </g>
+</svg>

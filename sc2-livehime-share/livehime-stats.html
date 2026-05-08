@@ -1,0 +1,394 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SC2 Live Stats HUD</title>
+    <style>
+      :root {
+        --cyan: #38e4ff;
+        --cyan-soft: rgba(56, 228, 255, 0.22);
+        --gold: #ffd58c;
+        --gold-soft: rgba(255, 213, 140, 0.2);
+        --ink: rgba(2, 7, 11, 0.72);
+        --text: #eefcff;
+        --muted: #8feeff;
+        --danger: #ff7a95;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        margin: 0;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: transparent;
+        font-family: "Microsoft YaHei", "PingFang SC", Arial, sans-serif;
+        color: var(--text);
+      }
+
+      body {
+        display: grid;
+        place-items: center;
+      }
+
+      .hud {
+        position: relative;
+        width: 920px;
+        min-height: 212px;
+        padding: 22px 28px 24px;
+        background:
+          linear-gradient(135deg, rgba(9, 24, 28, 0.82), rgba(2, 7, 11, 0.48)),
+          repeating-linear-gradient(60deg, transparent 0 30px, rgba(56, 228, 255, 0.055) 31px 32px);
+        border: 2px solid rgba(255, 213, 140, 0.62);
+        clip-path: polygon(0 0, calc(100% - 54px) 0, 100% 54px, 100% 100%, 48px 100%, 0 calc(100% - 48px));
+        filter: drop-shadow(0 0 14px rgba(56, 228, 255, 0.28));
+      }
+
+      .hud::before,
+      .hud::after {
+        content: "";
+        position: absolute;
+        left: 28px;
+        right: 88px;
+        height: 4px;
+        background: linear-gradient(90deg, transparent, var(--cyan), rgba(238, 252, 255, 0.82), transparent);
+        box-shadow: 0 0 16px rgba(56, 228, 255, 0.72);
+      }
+
+      .hud::before {
+        top: 12px;
+      }
+
+      .hud::after {
+        bottom: 12px;
+        background: linear-gradient(90deg, transparent, var(--gold), rgba(255, 245, 220, 0.74), transparent);
+        box-shadow: 0 0 14px rgba(255, 213, 140, 0.58);
+      }
+
+      .top {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 18px;
+        margin-bottom: 18px;
+      }
+
+      .brand {
+        min-width: 0;
+      }
+
+      .title {
+        margin: 0;
+        font-size: 34px;
+        line-height: 1.12;
+        font-weight: 800;
+        letter-spacing: 0;
+      }
+
+      .subtitle {
+        margin-top: 6px;
+        color: var(--muted);
+        font-size: 18px;
+      }
+
+      .timer {
+        display: grid;
+        gap: 4px;
+        text-align: right;
+        white-space: nowrap;
+      }
+
+      .timer-label {
+        color: var(--gold);
+        font-size: 16px;
+      }
+
+      .timer-value {
+        font-variant-numeric: tabular-nums;
+        font-size: 36px;
+        font-weight: 800;
+        text-shadow: 0 0 12px rgba(56, 228, 255, 0.58);
+      }
+
+      .stats {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 12px;
+      }
+
+      .stat {
+        min-width: 0;
+        padding: 14px 16px 15px;
+        background: rgba(0, 0, 0, 0.28);
+        border: 1px solid rgba(56, 228, 255, 0.34);
+        border-radius: 8px;
+      }
+
+      .label {
+        color: rgba(238, 252, 255, 0.7);
+        font-size: 15px;
+      }
+
+      .value {
+        margin-top: 6px;
+        font-size: 30px;
+        line-height: 1;
+        font-weight: 800;
+        font-variant-numeric: tabular-nums;
+      }
+
+      .value.good {
+        color: #72ffbd;
+      }
+
+      .value.bad {
+        color: var(--danger);
+      }
+
+      .controls {
+        display: none;
+        grid-template-columns: repeat(5, 1fr);
+        gap: 10px;
+        margin-top: 16px;
+      }
+
+      button {
+        min-height: 42px;
+        color: var(--text);
+        background: rgba(6, 18, 24, 0.86);
+        border: 1px solid rgba(56, 228, 255, 0.46);
+        border-radius: 6px;
+        font: inherit;
+        font-weight: 700;
+        cursor: pointer;
+      }
+
+      button:hover {
+        border-color: rgba(255, 213, 140, 0.82);
+        box-shadow: 0 0 12px rgba(56, 228, 255, 0.32);
+      }
+
+      .edit-mode .controls {
+        display: grid;
+      }
+
+      .hint {
+        display: none;
+        margin-top: 12px;
+        color: rgba(238, 252, 255, 0.7);
+        font-size: 14px;
+      }
+
+      .edit-mode .hint {
+        display: block;
+      }
+
+      @media (max-width: 760px) {
+        .hud {
+          width: 100vw;
+          min-height: 100vh;
+          border-radius: 0;
+          clip-path: none;
+        }
+
+        .stats {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        .controls {
+          grid-template-columns: repeat(2, 1fr);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="hud" id="hud">
+      <section class="top">
+        <div class="brand">
+          <h1 class="title" id="roomTitle">星灵折跃频道</h1>
+          <div class="subtitle" id="matchup">本次直播战况</div>
+        </div>
+        <div class="timer">
+          <div class="timer-label">直播时间</div>
+          <div class="timer-value" id="duration">00:00:00</div>
+        </div>
+      </section>
+
+      <section class="stats" aria-label="stats">
+        <div class="stat">
+          <div class="label">场数</div>
+          <div class="value" id="games">0</div>
+        </div>
+        <div class="stat">
+          <div class="label">胜 / 负</div>
+          <div class="value"><span class="good" id="wins">0</span> / <span class="bad" id="losses">0</span></div>
+        </div>
+        <div class="stat">
+          <div class="label">胜率</div>
+          <div class="value" id="winrate">--</div>
+        </div>
+        <div class="stat">
+          <div class="label">当前状态</div>
+          <div class="value" id="streak">待折跃</div>
+        </div>
+      </section>
+
+      <section class="controls" aria-label="controls">
+        <button id="winBtn">胜 W</button>
+        <button id="lossBtn">负 L</button>
+        <button id="undoBtn">撤销 U</button>
+        <button id="pauseBtn">暂停 P</button>
+        <button id="resetBtn">重置 R</button>
+      </section>
+      <div class="hint">直播姬源里建议隐藏控制按钮；需要操作时在浏览器打开本页，加上 <strong>?edit=1</strong>。快捷键：W 胜，L 负，U 撤销，P 暂停，R 重置。</div>
+    </main>
+
+    <script>
+      const storeKey = "sc2-livehime-stats-v1";
+      const params = new URLSearchParams(window.location.search);
+      const editMode = params.get("edit") === "1";
+      const title = params.get("title");
+      const matchup = params.get("matchup");
+      const startParam = params.get("start");
+
+      const defaults = {
+        startedAt: Date.now(),
+        elapsedBeforePause: 0,
+        paused: false,
+        wins: 0,
+        losses: 0,
+        history: []
+      };
+
+      const state = loadState();
+
+      if (startParam === "now") {
+        state.startedAt = Date.now();
+        state.elapsedBeforePause = 0;
+        state.paused = false;
+        saveState();
+      }
+
+      if (title) {
+        document.getElementById("roomTitle").textContent = title;
+      }
+
+      if (matchup) {
+        document.getElementById("matchup").textContent = matchup;
+      }
+
+      if (editMode) {
+        document.body.classList.add("edit-mode");
+      }
+
+      document.getElementById("winBtn").addEventListener("click", () => addResult("W"));
+      document.getElementById("lossBtn").addEventListener("click", () => addResult("L"));
+      document.getElementById("undoBtn").addEventListener("click", undo);
+      document.getElementById("pauseBtn").addEventListener("click", togglePause);
+      document.getElementById("resetBtn").addEventListener("click", resetStats);
+
+      window.addEventListener("keydown", (event) => {
+        const key = event.key.toLowerCase();
+        if (key === "w") addResult("W");
+        if (key === "l") addResult("L");
+        if (key === "u") undo();
+        if (key === "p") togglePause();
+        if (key === "r") resetStats();
+      });
+
+      render();
+      setInterval(render, 1000);
+
+      function loadState() {
+        try {
+          const raw = localStorage.getItem(storeKey);
+          return raw ? { ...defaults, ...JSON.parse(raw) } : { ...defaults };
+        } catch {
+          return { ...defaults };
+        }
+      }
+
+      function saveState() {
+        localStorage.setItem(storeKey, JSON.stringify(state));
+      }
+
+      function addResult(result) {
+        if (result === "W") state.wins += 1;
+        if (result === "L") state.losses += 1;
+        state.history.push(result);
+        saveState();
+        render();
+      }
+
+      function undo() {
+        const last = state.history.pop();
+        if (last === "W") state.wins = Math.max(0, state.wins - 1);
+        if (last === "L") state.losses = Math.max(0, state.losses - 1);
+        saveState();
+        render();
+      }
+
+      function togglePause() {
+        if (state.paused) {
+          state.startedAt = Date.now() - state.elapsedBeforePause;
+          state.paused = false;
+        } else {
+          state.elapsedBeforePause = Date.now() - state.startedAt;
+          state.paused = true;
+        }
+        saveState();
+        render();
+      }
+
+      function resetStats() {
+        const ok = !editMode || window.confirm("重置本次直播统计？");
+        if (!ok) return;
+        state.startedAt = Date.now();
+        state.elapsedBeforePause = 0;
+        state.paused = false;
+        state.wins = 0;
+        state.losses = 0;
+        state.history = [];
+        saveState();
+        render();
+      }
+
+      function render() {
+        const games = state.wins + state.losses;
+        const elapsed = state.paused ? state.elapsedBeforePause : Date.now() - state.startedAt;
+        const winrate = games > 0 ? `${Math.round((state.wins / games) * 100)}%` : "--";
+        document.getElementById("duration").textContent = formatDuration(elapsed);
+        document.getElementById("games").textContent = String(games);
+        document.getElementById("wins").textContent = String(state.wins);
+        document.getElementById("losses").textContent = String(state.losses);
+        document.getElementById("winrate").textContent = winrate;
+        document.getElementById("streak").textContent = getStreak();
+        document.getElementById("pauseBtn").textContent = state.paused ? "继续 P" : "暂停 P";
+      }
+
+      function formatDuration(ms) {
+        const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+        const hours = Math.floor(totalSeconds / 3600);
+        const minutes = Math.floor((totalSeconds % 3600) / 60);
+        const seconds = totalSeconds % 60;
+        return [hours, minutes, seconds].map((part) => String(part).padStart(2, "0")).join(":");
+      }
+
+      function getStreak() {
+        if (state.history.length === 0) return "待折跃";
+        const last = state.history[state.history.length - 1];
+        let count = 0;
+        for (let index = state.history.length - 1; index >= 0; index -= 1) {
+          if (state.history[index] !== last) break;
+          count += 1;
+        }
+        return last === "W" ? `${count} 连胜` : `${count} 连败`;
+      }
+    </script>
+  </body>
+</html>

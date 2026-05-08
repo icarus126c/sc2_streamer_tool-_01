@@ -1,0 +1,71 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="3840" height="2160" viewBox="0 0 3840 2160">
+  <defs>
+    <filter id="cyanGlow" x="-80%" y="-80%" width="260%" height="260%">
+      <feGaussianBlur stdDeviation="5" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <filter id="goldGlow" x="-80%" y="-80%" width="260%" height="260%">
+      <feGaussianBlur stdDeviation="4" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <pattern id="hex" width="56" height="48" patternUnits="userSpaceOnUse">
+      <path d="M14 1 L42 1 L55 24 L42 47 L14 47 L1 24 Z" fill="none" stroke="#33d7ff" stroke-opacity=".18" stroke-width="2"/>
+    </pattern>
+    <linearGradient id="panelFill" x1="0" x2="1">
+      <stop offset="0" stop-color="#02070b" stop-opacity=".70"/>
+      <stop offset=".55" stop-color="#06151a" stop-opacity=".42"/>
+      <stop offset="1" stop-color="#02070b" stop-opacity=".05"/>
+    </linearGradient>
+    <linearGradient id="cyanLine" x1="0" x2="1">
+      <stop offset="0" stop-color="#20d8ff" stop-opacity="0"/>
+      <stop offset=".2" stop-color="#20d8ff" stop-opacity=".85"/>
+      <stop offset=".72" stop-color="#d5fff9" stop-opacity=".65"/>
+      <stop offset="1" stop-color="#20d8ff" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="goldLine" x1="0" x2="1">
+      <stop offset="0" stop-color="#ffd68a" stop-opacity="0"/>
+      <stop offset=".22" stop-color="#ffd68a" stop-opacity=".85"/>
+      <stop offset=".74" stop-color="#fff3cf" stop-opacity=".60"/>
+      <stop offset="1" stop-color="#ffd68a" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+
+  <g id="top-left-room-plate">
+    <path d="M44 48 H632 L724 140 V230 L682 272 H44 Z" fill="url(#panelFill)" stroke="#c9a566" stroke-opacity=".72" stroke-width="3"/>
+    <path d="M64 68 H612 L694 150 V218 L666 246 H64 Z" fill="url(#hex)" opacity=".92"/>
+    <path d="M80 82 H534" stroke="url(#cyanLine)" stroke-width="7" filter="url(#cyanGlow)"/>
+    <path d="M62 270 H650" stroke="url(#goldLine)" stroke-width="4" filter="url(#goldGlow)"/>
+    <text x="84" y="150" fill="#e9fbff" font-family="Microsoft YaHei, Arial, sans-serif" font-size="52" font-weight="700">星灵折跃频道</text>
+    <text x="88" y="208" fill="#7defff" font-family="Microsoft YaHei, Arial, sans-serif" font-size="28" opacity=".88">今日目标：稳住二矿 / 少漏房子</text>
+    <circle cx="650" cy="122" r="28" fill="none" stroke="#34e4ff" stroke-width="5" opacity=".9" filter="url(#cyanGlow)"/>
+    <circle cx="650" cy="122" r="10" fill="#34e4ff" opacity=".85"/>
+  </g>
+
+  <g id="top-hud-trim">
+    <path d="M910 24 H2930" stroke="url(#cyanLine)" stroke-width="5" filter="url(#cyanGlow)"/>
+    <path d="M1120 42 H2720" stroke="url(#goldLine)" stroke-width="3" filter="url(#goldGlow)"/>
+    <path d="M1780 30 L1844 78 H1996 L2060 30" fill="none" stroke="#33d7ff" stroke-opacity=".55" stroke-width="3"/>
+  </g>
+
+  <g id="right-status">
+    <path d="M2790 96 H3690 L3740 146 V230 H2834 L2790 186 Z" fill="#02070b" fill-opacity=".36" stroke="#33d7ff" stroke-opacity=".52" stroke-width="3"/>
+    <path d="M2824 120 H3660" stroke="url(#cyanLine)" stroke-width="4" filter="url(#cyanGlow)"/>
+    <text x="2846" y="182" fill="#e8fbff" font-family="Microsoft YaHei, Arial, sans-serif" font-size="34" font-weight="700">舰队状态</text>
+    <text x="3060" y="182" fill="#ffd991" font-family="Microsoft YaHei, Arial, sans-serif" font-size="30">APM --</text>
+    <text x="3212" y="182" fill="#7defff" font-family="Microsoft YaHei, Arial, sans-serif" font-size="30">战绩 0-0</text>
+    <text x="3388" y="182" fill="#f2f7ff" font-family="Microsoft YaHei, Arial, sans-serif" font-size="30">段位 --</text>
+  </g>
+
+  <g id="side-energy-tabs" opacity=".82">
+    <path d="M18 720 L46 690 H76 V1286 H46 L18 1256 Z" fill="#041015" fill-opacity=".48" stroke="#33d7ff" stroke-opacity=".46" stroke-width="3"/>
+    <path d="M3762 730 H3794 L3822 760 V1264 L3794 1294 H3762 Z" fill="#041015" fill-opacity=".48" stroke="#33d7ff" stroke-opacity=".46" stroke-width="3"/>
+    <path d="M46 760 V1230" stroke="#20d8ff" stroke-width="6" stroke-opacity=".72" filter="url(#cyanGlow)"/>
+    <path d="M3794 770 V1240" stroke="#20d8ff" stroke-width="6" stroke-opacity=".72" filter="url(#cyanGlow)"/>
+  </g>
+</svg>
