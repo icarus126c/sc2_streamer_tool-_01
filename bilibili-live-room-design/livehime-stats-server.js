@@ -13,11 +13,12 @@ const mmrApiConfigPath = path.join(__dirname, "mmr-api-config.json");
 let state = loadState();
 const clients = new Set();
 const replayConfig = loadReplayConfig();
-const mmrApiConfig = loadMmrApiConfig();
+let mmrApiConfig = loadMmrApiConfig();
 const seenReplayKeys = new Set(state.processedReplays || []);
 const seenReplayPaths = new Set(state.processedReplayPaths || []);
 const pendingReplayChecks = new Map();
 let activeMmrApiRefresh = null;
+let mmrApiTimer = null;
 
 const server = http.createServer((request, response) => {
   const url = new URL(request.url, `http://${host}:${port}`);
@@ -83,6 +84,7 @@ const server = http.createServer((request, response) => {
       if (action === "scanLatest") scanLatestReplay(true);
       if (action === "clearPending") clearPendingReplay();
       if (action === "refreshMmrApi") refreshMmrFromApi({ force: true });
+      if (action === "mmrApiConfig") updateMmrApiConfig(body);
       if (action === "title") {
         state.title = String(body.title || "星灵折跃频道").slice(0, 32);
         state.subtitle = String(body.subtitle || "本次直播战况").slice(0, 48);
@@ -292,6 +294,7 @@ function snapshot() {
     overlay: state.overlay,
     mmrApi: state.mmrApi,
     mmrApiEnabled: mmrApiConfig.enabled,
+    mmrApiConfig: publicMmrApiConfig(),
     overlayLine: buildOverlayLine(),
     matchDetail: buildDetailMatchText(state.lastMatch),
     replayWatching: replayConfig.enabled ? replayConfig.watchRoots : []
@@ -352,8 +355,8 @@ function loadReplayConfig() {
   }
 }
 
-function loadMmrApiConfig() {
-  const defaults = {
+function defaultMmrApiConfig() {
+  return {
     enabled: false,
     provider: "sc2pulse",
     baseUrl: "https://sc2pulse.nephest.com/sc2",
@@ -366,14 +369,69 @@ function loadMmrApiConfig() {
     timeoutMs: 12000,
     userAgent: "sc2-livehime-stats-overlay"
   };
+}
+
+function loadMmrApiConfig() {
+  const defaults = defaultMmrApiConfig();
   try {
-    const config = { ...defaults, ...readJsonFile(mmrApiConfigPath) };
-    fs.writeFileSync(mmrApiConfigPath, JSON.stringify(config, null, 2), "utf8");
+    const config = normalizeMmrApiConfig({ ...defaults, ...readJsonFile(mmrApiConfigPath) });
+    writeMmrApiConfig(config);
     return config;
   } catch {
-    fs.writeFileSync(mmrApiConfigPath, JSON.stringify(defaults, null, 2), "utf8");
+    writeMmrApiConfig(defaults);
     return defaults;
   }
+}
+
+function writeMmrApiConfig(config) {
+  fs.writeFileSync(mmrApiConfigPath, JSON.stringify(config, null, 2), "utf8");
+}
+
+function publicMmrApiConfig() {
+  return {
+    enabled: !!mmrApiConfig.enabled,
+    provider: mmrApiConfig.provider,
+    queue: mmrApiConfig.queue,
+    race: mmrApiConfig.race,
+    toonHandle: mmrApiConfig.toonHandle,
+    preferReplaySelf: !!mmrApiConfig.preferReplaySelf,
+    updateAfterReplay: !!mmrApiConfig.updateAfterReplay,
+    refreshMs: mmrApiConfig.refreshMs
+  };
+}
+
+function normalizeMmrApiConfig(input = {}) {
+  const defaults = defaultMmrApiConfig();
+  const race = String(input.race || defaults.race).toUpperCase();
+  return {
+    ...defaults,
+    ...input,
+    enabled: input.enabled === true || input.enabled === "true" || input.enabled === "1" || input.enabled === "on",
+    provider: "sc2pulse",
+    baseUrl: String(input.baseUrl || defaults.baseUrl).trim() || defaults.baseUrl,
+    queue: String(input.queue || defaults.queue).trim() || defaults.queue,
+    race: ["AUTO", "TERRAN", "PROTOSS", "ZERG", "RANDOM"].includes(race) ? race.toLowerCase() : "auto",
+    toonHandle: String(input.toonHandle || "").trim(),
+    preferReplaySelf: input.preferReplaySelf !== false && input.preferReplaySelf !== "false" && input.preferReplaySelf !== "0",
+    updateAfterReplay: input.updateAfterReplay !== false && input.updateAfterReplay !== "false" && input.updateAfterReplay !== "0",
+    refreshMs: clampNumber(input.refreshMs ?? defaults.refreshMs, 30000, 1800000),
+    timeoutMs: clampNumber(input.timeoutMs ?? defaults.timeoutMs, 3000, 30000),
+    userAgent: String(input.userAgent || defaults.userAgent).trim() || defaults.userAgent
+  };
+}
+
+function updateMmrApiConfig(body) {
+  const nextConfig = { ...mmrApiConfig };
+  if ("enabled" in body || "mmrApiEnabled" in body) nextConfig.enabled = body.enabled ?? body.mmrApiEnabled;
+  if ("race" in body) nextConfig.race = body.race;
+  if ("toonHandle" in body) nextConfig.toonHandle = body.toonHandle;
+  if ("preferReplaySelf" in body) nextConfig.preferReplaySelf = body.preferReplaySelf;
+  if ("updateAfterReplay" in body) nextConfig.updateAfterReplay = body.updateAfterReplay;
+  if (Number(body.refreshSeconds) > 0) nextConfig.refreshMs = Number(body.refreshSeconds) * 1000;
+  if ("refreshMs" in body) nextConfig.refreshMs = body.refreshMs;
+  mmrApiConfig = normalizeMmrApiConfig(nextConfig);
+  writeMmrApiConfig(mmrApiConfig);
+  startMmrApiRefresher();
 }
 
 function readJsonFile(filePath) {
@@ -569,13 +627,18 @@ function formatScore(score) {
 }
 
 function startMmrApiRefresher() {
+  if (mmrApiTimer) {
+    clearInterval(mmrApiTimer);
+    mmrApiTimer = null;
+  }
   if (!mmrApiConfig.enabled) {
     state.mmrApi = { ...state.mmrApi, status: "disabled", message: "线上 MMR API 未启用" };
+    broadcast();
     return;
   }
   refreshMmrFromApi({ force: true });
   const refreshMs = clampNumber(mmrApiConfig.refreshMs, 30000, 1800000);
-  setInterval(() => refreshMmrFromApi(), refreshMs);
+  mmrApiTimer = setInterval(() => refreshMmrFromApi(), refreshMs);
 }
 
 function refreshMmrFromApi(options = {}) {
@@ -1039,7 +1102,8 @@ function renderPage(control) {
       .ticker-fields { display: ${control ? "grid" : "none"}; grid-template-columns: 1fr auto; gap: 10px; width: 1240px; }
       .overlay-fields { display: ${control ? "grid" : "none"}; grid-template-columns: 1.2fr repeat(6, 1fr) auto; gap: 10px; width: 1240px; }
       .display-fields { display: ${control ? "grid" : "none"}; grid-template-columns: 160px 190px 1fr 120px; gap: 10px; width: 1240px; align-items: center; color: rgba(238,252,255,.82); }
-      .display-fields label { min-height: 44px; display: flex; align-items: center; gap: 8px; padding: 0 12px; background: rgba(6,18,24,.72); border: 1px solid rgba(56,228,255,.32); border-radius: 6px; }
+      .mmr-api-fields { display: ${control ? "grid" : "none"}; grid-template-columns: 170px 170px 170px 1fr 140px auto; gap: 10px; width: 1240px; align-items: center; color: rgba(238,252,255,.82); }
+      .display-fields label, .mmr-api-fields label { min-height: 44px; display: flex; align-items: center; gap: 8px; padding: 0 12px; background: rgba(6,18,24,.72); border: 1px solid rgba(56,228,255,.32); border-radius: 6px; }
       select { min-height: 44px; color: #eefcff; background: rgba(6,18,24,.92); border: 1px solid rgba(56,228,255,.48); border-radius: 6px; font: inherit; font-weight: 700; padding: 0 12px; }
       input[type="checkbox"] { min-height: 0; width: 18px; height: 18px; }
       input { padding: 0 12px; }
@@ -1121,6 +1185,20 @@ function renderPage(control) {
         <input id="chromeOpacityInput" type="range" min="0" max="100" step="5" />
         <span id="chromeOpacityLabel">透明度 100%</span>
       </section>
+      <section class="mmr-api-fields">
+        <label><input id="mmrApiEnabledInput" type="checkbox" />启用线上MMR</label>
+        <label><input id="mmrApiReplayInput" type="checkbox" />自动识别账号</label>
+        <select id="mmrApiRaceInput">
+          <option value="auto">按录像种族</option>
+          <option value="terran">人族</option>
+          <option value="protoss">神族</option>
+          <option value="zerg">虫族</option>
+          <option value="random">随机</option>
+        </select>
+        <input id="mmrApiToonInput" placeholder="账号 5-S2-1-12437915，可留空" />
+        <input id="mmrApiRefreshInput" type="number" min="30" max="1800" step="30" placeholder="刷新秒数" />
+        <button id="saveMmrApi">保存线上MMR</button>
+      </section>
       <div class="replay-line" id="replayLine">回放监听启动中...</div>
       <div class="replay-line" id="mmrApiLine">线上 MMR API 未启用</div>
       <div class="note">直播姬网页源填 /view；这个控制页填 /control。新回放出现后会显示“回放待确认”，按 W/L 会把这场记成胜/负。</div>
@@ -1145,6 +1223,12 @@ function renderPage(control) {
       });
       document.getElementById("saveOverlay")?.addEventListener("click", () => {
         saveOverlay();
+      });
+      document.getElementById("saveMmrApi")?.addEventListener("click", () => {
+        saveMmrApiConfig();
+      });
+      document.getElementById("mmrApiEnabledInput")?.addEventListener("change", () => {
+        saveMmrApiConfig();
       });
       document.getElementById("showInfoLineInput")?.addEventListener("change", saveOverlay);
       document.getElementById("themeInput")?.addEventListener("change", saveOverlay);
@@ -1199,6 +1283,7 @@ function renderPage(control) {
         if (subtitleInput && !subtitleInput.value) subtitleInput.value = data.subtitle;
         if (tickerInput && document.activeElement !== tickerInput) tickerInput.value = data.tickerText || "";
         fillOverlayInputs(data.overlay);
+        fillMmrApiInputs(data.mmrApiConfig);
       }
       function renderTicker(text) {
         const ticker = document.getElementById("tickerText");
@@ -1210,7 +1295,7 @@ function renderPage(control) {
         ticker.style.setProperty("--ticker-speed", Math.max(12, Math.min(36, value.length * 0.55)) + "s");
       }
       function formatMmrApiLine(data) {
-        if (!data.mmrApiEnabled) return "线上 MMR API：未启用（编辑 mmr-api-config.json 后重启）";
+        if (!data.mmrApiEnabled) return "线上 MMR API：未启用（可在控制台勾选启用）";
         const api = data.mmrApi || {};
         const base = "线上 MMR API：" + (api.message || api.status || "等待刷新");
         const account = api.toonHandle ? " | " + api.toonHandle : "";
@@ -1240,6 +1325,18 @@ function renderPage(control) {
         const chromeLabel = document.getElementById("chromeOpacityLabel");
         if (chromeLabel) chromeLabel.textContent = "透明度 " + (overlay?.chromeOpacity ?? 100) + "%";
       }
+      function fillMmrApiInputs(config) {
+        const enabledInput = document.getElementById("mmrApiEnabledInput");
+        if (enabledInput && document.activeElement !== enabledInput) enabledInput.checked = !!config?.enabled;
+        const replayInput = document.getElementById("mmrApiReplayInput");
+        if (replayInput && document.activeElement !== replayInput) replayInput.checked = config?.preferReplaySelf !== false;
+        const raceInput = document.getElementById("mmrApiRaceInput");
+        if (raceInput && document.activeElement !== raceInput) raceInput.value = config?.race || "auto";
+        const toonInput = document.getElementById("mmrApiToonInput");
+        if (toonInput && document.activeElement !== toonInput) toonInput.value = config?.toonHandle || "";
+        const refreshInput = document.getElementById("mmrApiRefreshInput");
+        if (refreshInput && document.activeElement !== refreshInput) refreshInput.value = Math.round((config?.refreshMs || 120000) / 1000);
+      }
       function saveOverlay() {
         action("overlay", {
           currentMmr: document.getElementById("currentMmrInput").value,
@@ -1252,6 +1349,15 @@ function renderPage(control) {
           showInfoLine: document.getElementById("showInfoLineInput").checked,
           chromeOpacity: document.getElementById("chromeOpacityInput").value,
           theme: document.getElementById("themeInput").value
+        });
+      }
+      function saveMmrApiConfig() {
+        action("mmrApiConfig", {
+          enabled: document.getElementById("mmrApiEnabledInput").checked,
+          preferReplaySelf: document.getElementById("mmrApiReplayInput").checked,
+          race: document.getElementById("mmrApiRaceInput").value,
+          toonHandle: document.getElementById("mmrApiToonInput").value,
+          refreshSeconds: document.getElementById("mmrApiRefreshInput").value
         });
       }
       function applyDisplaySettings(overlay) {

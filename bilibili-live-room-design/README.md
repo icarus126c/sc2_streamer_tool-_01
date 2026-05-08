@@ -2,9 +2,9 @@
 
 ## 线上 API MMR
 
-这个分支新增了 SC2 Pulse 线上 MMR 查询。服务启动后会自动生成 `mmr-api-config.json`，把里面的 `enabled` 改成 `true` 后重启即可启用。默认会从最近一盘 replay 里识别自己的 `toonHandle`，再查询 `LOTV_1V1` 当前 rating；查不到线上数据时会保留原来的 replay/manual MMR，不会把直播画面刷空。
+这个分支新增了 SC2 Pulse 线上 MMR 查询。服务启动后会自动生成 `mmr-api-config.json`，现在可以直接在控制台勾选 `启用线上MMR`，填写账号或使用最近一盘 replay 自动识别账号，不需要手动改配置文件或重启。默认查询 `LOTV_1V1` 当前 rating；查不到线上数据时会保留原来的 replay/manual MMR，不会把直播画面刷空。
 
-控制台里新增了 `刷新线上MMR` 按钮，也会显示线上 API 当前状态。配置示例见 `mmr-api-config.example.json`。SC2 Pulse 数据来自公开天梯索引，使用时请保留对 `https://sc2pulse.nephest.com/sc2` 的来源说明。
+控制台里有 `启用线上MMR`、账号、种族、刷新间隔和 `刷新线上MMR` 按钮，也会显示线上 API 当前状态。设置会保存到 `mmr-api-config.json`，配置示例见 `mmr-api-config.example.json`。SC2 Pulse 数据来自公开天梯索引，使用时请保留对 `https://sc2pulse.nephest.com/sc2` 的来源说明。
 
 这套按 `3840 x 2160` 设计，适合 OBS 里作为透明叠加层使用。风格是“星灵金蓝科幻 HUD”，避免直接使用游戏素材，降低侵权和画面冲突风险。
 
