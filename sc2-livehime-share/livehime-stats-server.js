@@ -87,6 +87,7 @@ const server = http.createServer((request, response) => {
       if (action === "clearPending") clearPendingReplay();
       if (action === "refreshMmrApi") refreshMmrFromApi({ force: true });
       if (action === "mmrApiConfig") updateMmrApiConfig(body);
+      if (action === "manualMmrDelta") applyManualMmrDelta(body);
       if (action === "title") {
         state.title = String(body.title || "星灵折跃频道").slice(0, 32);
       }
@@ -462,7 +463,8 @@ function readJsonFile(filePath) {
   return JSON.parse(fs.readFileSync(filePath, "utf8").replace(/^\uFEFF/, ""));
 }
 
-function booleanConfig(value) {
+function booleanConfig(value, fallback = false) {
+  if (value === undefined || value === null) return fallback;
   return value === true || value === "true" || value === "1" || value === "on";
 }
 
@@ -906,10 +908,8 @@ function updateReplayMmrEstimate(match, result) {
   const opponentMmr = normalizeMmrNumber(opponent?.mmr);
   if (!opponentMmr) return false;
   const current = normalizeMmrNumber(state.overlay.currentMmr);
-  const selfReplayMmr = normalizeMmrNumber(self?.mmr);
-  let seed = current || selfReplayMmr;
-  const suspiciousReplayMmr = !selfReplayMmr || selfReplayMmr < 1000 || Math.abs(selfReplayMmr - opponentMmr) > 1200;
-  if (!seed || (suspiciousReplayMmr && Math.abs(seed - opponentMmr) > 1200)) {
+  let seed = current;
+  if (!seed || Math.abs(seed - opponentMmr) > 1200) {
     seed = opponentMmr + (result === "W" ? 24 : -24);
   }
   const score = result === "W" ? 1 : 0;
@@ -920,9 +920,10 @@ function updateReplayMmrEstimate(match, result) {
   state.mmrApi = {
     ...state.mmrApi,
     status: "estimated",
-    message: `Replay MMR 估算：${estimated}（对手 ${opponentMmr}，${result === "W" ? "胜" : "负"}，公开样本校准）`,
+    message: `Replay MMR 估算：${estimated}（起点 ${seed}，对手 ${opponentMmr}，${result === "W" ? "胜" : "负"}）`,
     source: "replay-estimate",
     rating: estimated,
+    replaySeed: seed,
     lastUpdatedAt: Date.now()
   };
   return true;
@@ -932,6 +933,31 @@ function normalizeMmrNumber(value) {
   const number = Number(value);
   if (!Number.isFinite(number) || number <= 0) return 0;
   return Math.round(number);
+}
+
+function applyManualMmrDelta(body) {
+  const current = normalizeMmrNumber(state.overlay.currentMmr);
+  const delta = Number(body.delta ?? body.mmrDelta);
+  if (!current || !Number.isFinite(delta) || Math.abs(delta) > 500) {
+    state.mmrApi = {
+      ...state.mmrApi,
+      status: "manual-rejected",
+      message: "手动 MMR 变化无效：请填 +18 或 -12 这样的数值",
+      source: state.mmrApi?.source || "manual"
+    };
+    return;
+  }
+  const next = Math.max(0, Math.round(current + delta));
+  state.overlay.currentMmr = String(next);
+  state.mmrApi = {
+    ...state.mmrApi,
+    status: "manual-adjusted",
+    message: `手动修正 MMR：${current} ${delta >= 0 ? "+" : ""}${Math.round(delta)} = ${next}`,
+    source: "manual-delta",
+    rating: next,
+    manualDelta: Math.round(delta),
+    lastUpdatedAt: Date.now()
+  };
 }
 
 function decrementMatchup(matchupKey, result) {
@@ -1214,7 +1240,7 @@ function renderPage(control) {
       .overlay-fields { display: ${control ? "grid" : "none"}; grid-template-columns: 1.2fr repeat(6, 1fr) auto; gap: 10px; width: 1240px; }
       .display-fields { display: ${control ? "grid" : "none"}; grid-template-columns: 160px 190px 1fr 120px; gap: 10px; width: 1240px; align-items: center; color: rgba(238,252,255,.82); }
       .mmr-api-fields { display: ${control ? "grid" : "none"}; grid-template-columns: 170px 170px 170px 1fr 140px auto; gap: 10px; width: 1240px; align-items: center; color: rgba(238,252,255,.82); }
-      .estimate-fields { display: ${control ? "grid" : "none"}; grid-template-columns: 210px 160px 1fr; gap: 10px; width: 1240px; align-items: center; color: rgba(238,252,255,.82); }
+      .estimate-fields { display: ${control ? "grid" : "none"}; grid-template-columns: 210px 160px 140px auto 1fr; gap: 10px; width: 1240px; align-items: center; color: rgba(238,252,255,.82); }
       .display-fields label, .mmr-api-fields label, .estimate-fields label { min-height: 44px; display: flex; align-items: center; gap: 8px; padding: 0 12px; background: rgba(6,18,24,.72); border: 1px solid rgba(56,228,255,.32); border-radius: 6px; }
       select { min-height: 44px; color: #eefcff; background: rgba(6,18,24,.92); border: 1px solid rgba(56,228,255,.48); border-radius: 6px; font: inherit; font-weight: 700; padding: 0 12px; }
       input[type="checkbox"] { min-height: 0; width: 18px; height: 18px; }
@@ -1313,7 +1339,9 @@ function renderPage(control) {
       <section class="estimate-fields">
         <label><input id="replayMmrEstimateInput" type="checkbox" />Replay MMR估算</label>
         <input id="replayMmrKInput" type="number" min="8" max="80" step="1" placeholder="校准K值 44" />
-        <span>打开后每盘按 replay 里的对手 MMR 和胜负连续估算当前 MMR；适合线上 API 更新慢或国服自身 MMR 异常。默认 K=44、分差尺度=850，来自 SC2 Pulse 公开逐局变化样本。</span>
+        <input id="manualMmrDeltaInput" type="number" min="-500" max="500" step="1" placeholder="MMR变化 +18" />
+        <button id="applyMmrDelta">应用变化</button>
+        <span>估算只按 SC2 Pulse 公开正常样本参数和 replay 对手 MMR 滚动；如果实际结算有偏差，在这里手动填本盘 MMR 变化来校准当前值。</span>
       </section>
       <div class="replay-line" id="replayLine">回放监听启动中...</div>
       <div class="replay-line" id="mmrApiLine">线上 MMR API 未启用</div>
@@ -1351,6 +1379,9 @@ function renderPage(control) {
       });
       document.getElementById("replayMmrKInput")?.addEventListener("change", () => {
         saveMmrApiConfig();
+      });
+      document.getElementById("applyMmrDelta")?.addEventListener("click", () => {
+        applyManualMmrDelta();
       });
       document.getElementById("mmrApiToonInput")?.addEventListener("input", () => {
         syncMmrApiManualMode();
@@ -1525,6 +1556,11 @@ function renderPage(control) {
           Number(config.replayMmrEstimateK || 44) === Number(localMmrApiOverride.replayMmrEstimateK || 44);
         if (serverMatches) localMmrApiOverride = null;
         return merged;
+      }
+      function applyManualMmrDelta() {
+        const input = document.getElementById("manualMmrDeltaInput");
+        action("manualMmrDelta", { delta: input.value });
+        input.value = "";
       }
       function applyDisplaySettings(overlay) {
         const hud = document.querySelector(".hud");
