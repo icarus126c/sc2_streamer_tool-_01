@@ -744,7 +744,7 @@ async function refreshMmrFromApiInner(options = {}) {
     };
     return null;
   }
-  const keepReplayEstimate = mmrApiConfig.replayMmrEstimate && state.mmrApi?.source === "replay-estimate" && !options.force;
+  const keepReplayEstimate = mmrApiConfig.replayMmrEstimate && state.mmrApi?.source === "replay-estimate";
   if (!keepReplayEstimate) state.overlay.currentMmr = String(result.rating);
   state.mmrApi = {
     ...state.mmrApi,
@@ -1321,6 +1321,7 @@ function renderPage(control) {
     </main>
     <script>
       const source = new EventSource("/events");
+      let localMmrApiOverride = null;
       source.onmessage = (event) => render(JSON.parse(event.data));
       fetch("/state").then((response) => response.json()).then(render);
       document.querySelectorAll("[data-action]").forEach((button) => {
@@ -1343,6 +1344,12 @@ function renderPage(control) {
         saveMmrApiConfig();
       });
       document.getElementById("mmrApiEnabledInput")?.addEventListener("change", () => {
+        saveMmrApiConfig();
+      });
+      document.getElementById("replayMmrEstimateInput")?.addEventListener("change", () => {
+        saveMmrApiConfig();
+      });
+      document.getElementById("replayMmrKInput")?.addEventListener("change", () => {
         saveMmrApiConfig();
       });
       document.getElementById("mmrApiToonInput")?.addEventListener("input", () => {
@@ -1442,6 +1449,7 @@ function renderPage(control) {
         if (chromeLabel) chromeLabel.textContent = "透明度 " + (overlay?.chromeOpacity ?? 100) + "%";
       }
       function fillMmrApiInputs(config) {
+        config = mergeLocalMmrApiConfig(config);
         const enabledInput = document.getElementById("mmrApiEnabledInput");
         if (enabledInput && document.activeElement !== enabledInput) enabledInput.checked = !!config?.enabled;
         const replayInput = document.getElementById("mmrApiReplayInput");
@@ -1484,15 +1492,39 @@ function renderPage(control) {
       }
       function saveMmrApiConfig() {
         const toonHandle = document.getElementById("mmrApiToonInput").value.trim();
-        action("mmrApiConfig", {
+        localMmrApiOverride = {
           enabled: document.getElementById("mmrApiEnabledInput").checked,
           preferReplaySelf: toonHandle ? false : true,
           race: document.getElementById("mmrApiRaceInput").value,
           toonHandle,
-          refreshSeconds: document.getElementById("mmrApiRefreshInput").value,
+          refreshMs: Math.max(30, Number(document.getElementById("mmrApiRefreshInput").value || 120)) * 1000,
           replayMmrEstimate: document.getElementById("replayMmrEstimateInput").checked,
           replayMmrEstimateK: document.getElementById("replayMmrKInput").value
+        };
+        action("mmrApiConfig", {
+          enabled: localMmrApiOverride.enabled,
+          preferReplaySelf: localMmrApiOverride.preferReplaySelf,
+          race: localMmrApiOverride.race,
+          toonHandle: localMmrApiOverride.toonHandle,
+          refreshSeconds: document.getElementById("mmrApiRefreshInput").value,
+          replayMmrEstimate: localMmrApiOverride.replayMmrEstimate,
+          replayMmrEstimateK: localMmrApiOverride.replayMmrEstimateK
         });
+      }
+      function mergeLocalMmrApiConfig(config) {
+        if (!localMmrApiOverride) return config || {};
+        const merged = { ...(config || {}), ...localMmrApiOverride };
+        const serverMatches =
+          !!config &&
+          config.enabled === localMmrApiOverride.enabled &&
+          config.preferReplaySelf === localMmrApiOverride.preferReplaySelf &&
+          String(config.race || "auto") === String(localMmrApiOverride.race || "auto") &&
+          String(config.toonHandle || "") === String(localMmrApiOverride.toonHandle || "") &&
+          Number(config.refreshMs || 0) === Number(localMmrApiOverride.refreshMs || 0) &&
+          config.replayMmrEstimate === localMmrApiOverride.replayMmrEstimate &&
+          Number(config.replayMmrEstimateK || 44) === Number(localMmrApiOverride.replayMmrEstimateK || 44);
+        if (serverMatches) localMmrApiOverride = null;
+        return merged;
       }
       function applyDisplaySettings(overlay) {
         const hud = document.querySelector(".hud");
