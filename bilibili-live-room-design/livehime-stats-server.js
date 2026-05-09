@@ -9,8 +9,8 @@ const host = "127.0.0.1";
 const dataPath = path.join(__dirname, "livehime-stats-data.json");
 const replayConfigPath = path.join(__dirname, "replay-config.json");
 const mmrApiConfigPath = path.join(__dirname, "mmr-api-config.json");
-const CN_MMR_ESTIMATE_DEFAULT_K = 44;
-const CN_MMR_ESTIMATE_SCALE = 850;
+const REPLAY_MMR_ESTIMATE_DEFAULT_K = 44;
+const REPLAY_MMR_ESTIMATE_SCALE = 850;
 
 let state = loadState();
 const clients = new Set();
@@ -233,7 +233,9 @@ function addResult(result, replayOverride = null) {
     rememberReplay(replay.key);
     rememberReplayPath(replay.path);
   }
-  if (replay?.parsed && mmrApiConfig.enabled && mmrApiConfig.updateAfterReplay) refreshMmrFromApi({ match: replay.parsed, force: true });
+  if (replay?.parsed && mmrApiConfig.enabled && mmrApiConfig.updateAfterReplay && !mmrApiConfig.replayMmrEstimate) {
+    refreshMmrFromApi({ match: replay.parsed, force: true });
+  }
   updateReplaySubtitle();
 }
 
@@ -366,8 +368,8 @@ function defaultMmrApiConfig() {
     toonHandle: "",
     preferReplaySelf: true,
     updateAfterReplay: true,
-    cnMmrEstimate: false,
-    cnMmrEstimateK: CN_MMR_ESTIMATE_DEFAULT_K,
+    replayMmrEstimate: false,
+    replayMmrEstimateK: REPLAY_MMR_ESTIMATE_DEFAULT_K,
     refreshMs: 120000,
     timeoutMs: 12000,
     userAgent: "sc2-livehime-stats-overlay"
@@ -399,8 +401,8 @@ function publicMmrApiConfig() {
     toonHandle: mmrApiConfig.toonHandle,
     preferReplaySelf: !!mmrApiConfig.preferReplaySelf,
     updateAfterReplay: !!mmrApiConfig.updateAfterReplay,
-    cnMmrEstimate: !!mmrApiConfig.cnMmrEstimate,
-    cnMmrEstimateK: mmrApiConfig.cnMmrEstimateK,
+    replayMmrEstimate: !!mmrApiConfig.replayMmrEstimate,
+    replayMmrEstimateK: mmrApiConfig.replayMmrEstimateK,
     refreshMs: mmrApiConfig.refreshMs
   };
 }
@@ -409,9 +411,10 @@ function normalizeMmrApiConfig(input = {}) {
   const defaults = defaultMmrApiConfig();
   const race = String(input.race || defaults.race).toUpperCase();
   const toonHandle = normalizeToonHandleInput(input.toonHandle || "");
+  const { cnMmrEstimate: legacyEstimate, cnMmrEstimateK: legacyEstimateK, ...inputWithoutLegacy } = input;
   return {
     ...defaults,
-    ...input,
+    ...inputWithoutLegacy,
     enabled: input.enabled === true || input.enabled === "true" || input.enabled === "1" || input.enabled === "on",
     provider: "sc2pulse",
     baseUrl: String(input.baseUrl || defaults.baseUrl).trim() || defaults.baseUrl,
@@ -420,8 +423,8 @@ function normalizeMmrApiConfig(input = {}) {
     toonHandle,
     preferReplaySelf: !toonHandle && input.preferReplaySelf !== false && input.preferReplaySelf !== "false" && input.preferReplaySelf !== "0",
     updateAfterReplay: input.updateAfterReplay !== false && input.updateAfterReplay !== "false" && input.updateAfterReplay !== "0",
-    cnMmrEstimate: input.cnMmrEstimate === true || input.cnMmrEstimate === "true" || input.cnMmrEstimate === "1" || input.cnMmrEstimate === "on",
-    cnMmrEstimateK: clampNumber(input.cnMmrEstimateK ?? defaults.cnMmrEstimateK, 8, 80),
+    replayMmrEstimate: booleanConfig(input.replayMmrEstimate ?? legacyEstimate),
+    replayMmrEstimateK: clampNumber(input.replayMmrEstimateK ?? legacyEstimateK ?? defaults.replayMmrEstimateK, 8, 80),
     refreshMs: clampNumber(input.refreshMs ?? defaults.refreshMs, 30000, 1800000),
     timeoutMs: clampNumber(input.timeoutMs ?? defaults.timeoutMs, 3000, 30000),
     userAgent: String(input.userAgent || defaults.userAgent).trim() || defaults.userAgent
@@ -446,8 +449,8 @@ function updateMmrApiConfig(body) {
   if ("toonHandle" in body) nextConfig.toonHandle = body.toonHandle;
   if ("preferReplaySelf" in body) nextConfig.preferReplaySelf = body.preferReplaySelf;
   if ("updateAfterReplay" in body) nextConfig.updateAfterReplay = body.updateAfterReplay;
-  if ("cnMmrEstimate" in body) nextConfig.cnMmrEstimate = body.cnMmrEstimate;
-  if ("cnMmrEstimateK" in body) nextConfig.cnMmrEstimateK = body.cnMmrEstimateK;
+  if ("replayMmrEstimate" in body || "cnMmrEstimate" in body) nextConfig.replayMmrEstimate = body.replayMmrEstimate ?? body.cnMmrEstimate;
+  if ("replayMmrEstimateK" in body || "cnMmrEstimateK" in body) nextConfig.replayMmrEstimateK = body.replayMmrEstimateK ?? body.cnMmrEstimateK;
   if (Number(body.refreshSeconds) > 0) nextConfig.refreshMs = Number(body.refreshSeconds) * 1000;
   if ("refreshMs" in body) nextConfig.refreshMs = body.refreshMs;
   mmrApiConfig = normalizeMmrApiConfig(nextConfig);
@@ -457,6 +460,10 @@ function updateMmrApiConfig(body) {
 
 function readJsonFile(filePath) {
   return JSON.parse(fs.readFileSync(filePath, "utf8").replace(/^\uFEFF/, ""));
+}
+
+function booleanConfig(value) {
+  return value === true || value === "true" || value === "1" || value === "on";
 }
 
 function startReplayWatcher() {
@@ -737,17 +744,19 @@ async function refreshMmrFromApiInner(options = {}) {
     };
     return null;
   }
-  state.overlay.currentMmr = String(result.rating);
+  const keepReplayEstimate = mmrApiConfig.replayMmrEstimate && state.mmrApi?.source === "replay-estimate" && !options.force;
+  if (!keepReplayEstimate) state.overlay.currentMmr = String(result.rating);
   state.mmrApi = {
     ...state.mmrApi,
     status: "ok",
-    message: `线上 MMR 已更新：${result.rating}`,
+    message: keepReplayEstimate ? `线上 MMR 查到 ${result.rating}，当前仍使用 Replay 估算` : `线上 MMR 已更新：${result.rating}`,
     lastUpdatedAt: Date.now(),
     lastTriedAt: Date.now(),
     toonHandle,
     race: result.race || race,
-    rating: result.rating,
-    source: "sc2pulse",
+    rating: keepReplayEstimate ? state.mmrApi?.rating : result.rating,
+    onlineRating: result.rating,
+    source: keepReplayEstimate ? "replay-estimate" : "sc2pulse",
     lastPlayed: result.lastPlayed || null
   };
   return result;
@@ -880,7 +889,7 @@ function clampNumber(value, min, max) {
 
 function updateOverlayFromMatch(match, result) {
   const self = match.selfPlayers?.[0];
-  const estimated = updateCnMmrEstimate(match, result);
+  const estimated = updateReplayMmrEstimate(match, result);
   if (!estimated && self?.mmr !== undefined && self?.mmr !== null) {
     state.overlay.currentMmr = String(self.mmr);
   }
@@ -890,10 +899,9 @@ function updateOverlayFromMatch(match, result) {
   if (result === "L") state.overlay.matchups[matchupKey].losses += 1;
 }
 
-function updateCnMmrEstimate(match, result) {
-  if (!mmrApiConfig.cnMmrEstimate) return false;
+function updateReplayMmrEstimate(match, result) {
+  if (!mmrApiConfig.replayMmrEstimate) return false;
   const self = match?.selfPlayers?.[0];
-  if (normalizeRegionId(self?.region) !== 5) return false;
   const opponent = (match.opponents || [])[0] || (match.players || []).find((player) => !player.isSelf);
   const opponentMmr = normalizeMmrNumber(opponent?.mmr);
   if (!opponentMmr) return false;
@@ -905,15 +913,15 @@ function updateCnMmrEstimate(match, result) {
     seed = opponentMmr + (result === "W" ? 24 : -24);
   }
   const score = result === "W" ? 1 : 0;
-  const expected = 1 / (1 + Math.pow(10, (opponentMmr - seed) / CN_MMR_ESTIMATE_SCALE));
-  const delta = clampNumber(mmrApiConfig.cnMmrEstimateK, 8, 80) * (score - expected);
+  const expected = 1 / (1 + Math.pow(10, (opponentMmr - seed) / REPLAY_MMR_ESTIMATE_SCALE));
+  const delta = clampNumber(mmrApiConfig.replayMmrEstimateK, 8, 80) * (score - expected);
   const estimated = Math.round(seed + delta);
   state.overlay.currentMmr = String(Math.max(0, estimated));
   state.mmrApi = {
     ...state.mmrApi,
     status: "estimated",
-    message: `国服 MMR 估算：${estimated}（对手 ${opponentMmr}，${result === "W" ? "胜" : "负"}，公开样本校准）`,
-    source: "cn-estimate",
+    message: `Replay MMR 估算：${estimated}（对手 ${opponentMmr}，${result === "W" ? "胜" : "负"}，公开样本校准）`,
+    source: "replay-estimate",
     rating: estimated,
     lastUpdatedAt: Date.now()
   };
@@ -1303,9 +1311,9 @@ function renderPage(control) {
         <button id="saveMmrApi">保存线上MMR</button>
       </section>
       <section class="estimate-fields">
-        <label><input id="cnMmrEstimateInput" type="checkbox" />国服MMR估算</label>
-        <input id="cnMmrKInput" type="number" min="8" max="80" step="1" placeholder="校准K值 44" />
-        <span>国服 replay 的自身 MMR 异常时，用对手 MMR 和胜负估算；默认 K=44、分差尺度=850，来自 SC2 Pulse 公开逐局变化样本，不使用你的未定级录像校准。</span>
+        <label><input id="replayMmrEstimateInput" type="checkbox" />Replay MMR估算</label>
+        <input id="replayMmrKInput" type="number" min="8" max="80" step="1" placeholder="校准K值 44" />
+        <span>打开后每盘按 replay 里的对手 MMR 和胜负连续估算当前 MMR；适合线上 API 更新慢或国服自身 MMR 异常。默认 K=44、分差尺度=850，来自 SC2 Pulse 公开逐局变化样本。</span>
       </section>
       <div class="replay-line" id="replayLine">回放监听启动中...</div>
       <div class="replay-line" id="mmrApiLine">线上 MMR API 未启用</div>
@@ -1446,10 +1454,10 @@ function renderPage(control) {
         if (toonInput && document.activeElement !== toonInput) toonInput.value = config?.toonHandle || "";
         const refreshInput = document.getElementById("mmrApiRefreshInput");
         if (refreshInput && document.activeElement !== refreshInput) refreshInput.value = Math.round((config?.refreshMs || 120000) / 1000);
-        const estimateInput = document.getElementById("cnMmrEstimateInput");
-        if (estimateInput && document.activeElement !== estimateInput) estimateInput.checked = !!config?.cnMmrEstimate;
-        const estimateKInput = document.getElementById("cnMmrKInput");
-        if (estimateKInput && document.activeElement !== estimateKInput) estimateKInput.value = config?.cnMmrEstimateK || 44;
+        const estimateInput = document.getElementById("replayMmrEstimateInput");
+        if (estimateInput && document.activeElement !== estimateInput) estimateInput.checked = !!config?.replayMmrEstimate;
+        const estimateKInput = document.getElementById("replayMmrKInput");
+        if (estimateKInput && document.activeElement !== estimateKInput) estimateKInput.value = config?.replayMmrEstimateK || 44;
         syncMmrApiManualMode();
       }
       function syncMmrApiManualMode() {
@@ -1482,8 +1490,8 @@ function renderPage(control) {
           race: document.getElementById("mmrApiRaceInput").value,
           toonHandle,
           refreshSeconds: document.getElementById("mmrApiRefreshInput").value,
-          cnMmrEstimate: document.getElementById("cnMmrEstimateInput").checked,
-          cnMmrEstimateK: document.getElementById("cnMmrKInput").value
+          replayMmrEstimate: document.getElementById("replayMmrEstimateInput").checked,
+          replayMmrEstimateK: document.getElementById("replayMmrKInput").value
         });
       }
       function applyDisplaySettings(overlay) {

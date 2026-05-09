@@ -7,8 +7,8 @@
   "toonHandle": "",
   "preferReplaySelf": true,
   "updateAfterReplay": true,
-  "cnMmrEstimate": false,
-  "cnMmrEstimateK": 44,
+  "replayMmrEstimate": false,
+  "replayMmrEstimateK": 44,
   "refreshMs": 120000,
   "timeoutMs": 12000,
   "userAgent": "sc2-livehime-stats-overlay"
