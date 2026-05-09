@@ -9,6 +9,8 @@ const host = "127.0.0.1";
 const dataPath = path.join(__dirname, "livehime-stats-data.json");
 const replayConfigPath = path.join(__dirname, "replay-config.json");
 const mmrApiConfigPath = path.join(__dirname, "mmr-api-config.json");
+const CN_MMR_ESTIMATE_DEFAULT_K = 44;
+const CN_MMR_ESTIMATE_SCALE = 850;
 
 let state = loadState();
 const clients = new Set();
@@ -87,7 +89,6 @@ const server = http.createServer((request, response) => {
       if (action === "mmrApiConfig") updateMmrApiConfig(body);
       if (action === "title") {
         state.title = String(body.title || "星灵折跃频道").slice(0, 32);
-        state.subtitle = String(body.subtitle || "本次直播战况").slice(0, 48);
       }
       if (action === "ticker") updateTickerText(body.tickerText ?? body.text ?? "");
       if (action === "overlay") updateOverlayInfo(body);
@@ -232,7 +233,7 @@ function addResult(result, replayOverride = null) {
     rememberReplay(replay.key);
     rememberReplayPath(replay.path);
   }
-  if (replay?.parsed && mmrApiConfig.updateAfterReplay) refreshMmrFromApi({ match: replay.parsed, force: true });
+  if (replay?.parsed && mmrApiConfig.enabled && mmrApiConfig.updateAfterReplay) refreshMmrFromApi({ match: replay.parsed, force: true });
   updateReplaySubtitle();
 }
 
@@ -365,6 +366,8 @@ function defaultMmrApiConfig() {
     toonHandle: "",
     preferReplaySelf: true,
     updateAfterReplay: true,
+    cnMmrEstimate: false,
+    cnMmrEstimateK: CN_MMR_ESTIMATE_DEFAULT_K,
     refreshMs: 120000,
     timeoutMs: 12000,
     userAgent: "sc2-livehime-stats-overlay"
@@ -396,6 +399,8 @@ function publicMmrApiConfig() {
     toonHandle: mmrApiConfig.toonHandle,
     preferReplaySelf: !!mmrApiConfig.preferReplaySelf,
     updateAfterReplay: !!mmrApiConfig.updateAfterReplay,
+    cnMmrEstimate: !!mmrApiConfig.cnMmrEstimate,
+    cnMmrEstimateK: mmrApiConfig.cnMmrEstimateK,
     refreshMs: mmrApiConfig.refreshMs
   };
 }
@@ -403,6 +408,7 @@ function publicMmrApiConfig() {
 function normalizeMmrApiConfig(input = {}) {
   const defaults = defaultMmrApiConfig();
   const race = String(input.race || defaults.race).toUpperCase();
+  const toonHandle = normalizeToonHandleInput(input.toonHandle || "");
   return {
     ...defaults,
     ...input,
@@ -411,13 +417,26 @@ function normalizeMmrApiConfig(input = {}) {
     baseUrl: String(input.baseUrl || defaults.baseUrl).trim() || defaults.baseUrl,
     queue: String(input.queue || defaults.queue).trim() || defaults.queue,
     race: ["AUTO", "TERRAN", "PROTOSS", "ZERG", "RANDOM"].includes(race) ? race.toLowerCase() : "auto",
-    toonHandle: String(input.toonHandle || "").trim(),
-    preferReplaySelf: input.preferReplaySelf !== false && input.preferReplaySelf !== "false" && input.preferReplaySelf !== "0",
+    toonHandle,
+    preferReplaySelf: !toonHandle && input.preferReplaySelf !== false && input.preferReplaySelf !== "false" && input.preferReplaySelf !== "0",
     updateAfterReplay: input.updateAfterReplay !== false && input.updateAfterReplay !== "false" && input.updateAfterReplay !== "0",
+    cnMmrEstimate: input.cnMmrEstimate === true || input.cnMmrEstimate === "true" || input.cnMmrEstimate === "1" || input.cnMmrEstimate === "on",
+    cnMmrEstimateK: clampNumber(input.cnMmrEstimateK ?? defaults.cnMmrEstimateK, 8, 80),
     refreshMs: clampNumber(input.refreshMs ?? defaults.refreshMs, 30000, 1800000),
     timeoutMs: clampNumber(input.timeoutMs ?? defaults.timeoutMs, 3000, 30000),
     userAgent: String(input.userAgent || defaults.userAgent).trim() || defaults.userAgent
   };
+}
+
+function normalizeToonHandleInput(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  const full = text.match(/([1235]-S2-\d-\d+)/i);
+  if (full) return full[1].toUpperCase();
+  const urlStyle = text.match(/[?&]toonHandle=([^&]+)/i);
+  if (urlStyle) return decodeURIComponent(urlStyle[1]).toUpperCase();
+  if (/^battlenet::\/\/starcraft\/profile\/[1235]\/\d+$/i.test(text)) return text;
+  return "";
 }
 
 function updateMmrApiConfig(body) {
@@ -427,6 +446,8 @@ function updateMmrApiConfig(body) {
   if ("toonHandle" in body) nextConfig.toonHandle = body.toonHandle;
   if ("preferReplaySelf" in body) nextConfig.preferReplaySelf = body.preferReplaySelf;
   if ("updateAfterReplay" in body) nextConfig.updateAfterReplay = body.updateAfterReplay;
+  if ("cnMmrEstimate" in body) nextConfig.cnMmrEstimate = body.cnMmrEstimate;
+  if ("cnMmrEstimateK" in body) nextConfig.cnMmrEstimateK = body.cnMmrEstimateK;
   if (Number(body.refreshSeconds) > 0) nextConfig.refreshMs = Number(body.refreshSeconds) * 1000;
   if ("refreshMs" in body) nextConfig.refreshMs = body.refreshMs;
   mmrApiConfig = normalizeMmrApiConfig(nextConfig);
@@ -647,50 +668,7 @@ function refreshMmrFromApi(options = {}) {
     return null;
   }
   if (activeMmrApiRefresh) return activeMmrApiRefresh;
-  const match = options.match || state.lastMatch;
-  const toonHandle = resolveMmrApiToonHandle(match);
-  const race = resolveMmrApiRace(match);
-  state.mmrApi = {
-    ...state.mmrApi,
-    provider: mmrApiConfig.provider,
-    status: "loading",
-    message: toonHandle ? "正在刷新线上 MMR..." : "缺少 toonHandle，等待下一盘录像识别账号",
-    lastTriedAt: Date.now(),
-    toonHandle,
-    race
-  };
-  broadcast();
-  if (!toonHandle) {
-    state.mmrApi.status = "missing-account";
-    saveState();
-    return null;
-  }
-  activeMmrApiRefresh = fetchSc2PulseMmr(toonHandle, race)
-    .then((result) => {
-      if (!result?.rating) {
-        state.mmrApi = {
-          ...state.mmrApi,
-          status: "not-found",
-          message: "线上 API 暂时没有这个账号的天梯数据，已保留原 MMR",
-          lastTriedAt: Date.now(),
-          source: "sc2pulse"
-        };
-        return;
-      }
-      state.overlay.currentMmr = String(result.rating);
-      state.mmrApi = {
-        ...state.mmrApi,
-        status: "ok",
-        message: `线上 MMR 已更新：${result.rating}`,
-        lastUpdatedAt: Date.now(),
-        lastTriedAt: Date.now(),
-        toonHandle,
-        race: result.race || race,
-        rating: result.rating,
-        source: "sc2pulse",
-        lastPlayed: result.lastPlayed || null
-      };
-    })
+  activeMmrApiRefresh = refreshMmrFromApiInner(options)
     .catch((error) => {
       state.mmrApi = {
         ...state.mmrApi,
@@ -708,6 +686,73 @@ function refreshMmrFromApi(options = {}) {
   return activeMmrApiRefresh;
 }
 
+async function refreshMmrFromApiInner(options = {}) {
+  const match = options.match || state.lastMatch;
+  let toonHandle = resolveMmrApiToonHandle(match);
+  const race = resolveMmrApiRace(match);
+  state.mmrApi = {
+    ...state.mmrApi,
+    provider: mmrApiConfig.provider,
+    status: "loading",
+    message: toonHandle ? "正在刷新线上 MMR..." : "缺少 toonHandle，等待下一盘录像识别账号",
+    lastTriedAt: Date.now(),
+    toonHandle,
+    race
+  };
+  broadcast();
+  if (!toonHandle) {
+    state.mmrApi.status = "missing-account";
+    saveState();
+    return null;
+  }
+  if (!isToonHandle(toonHandle)) {
+    state.mmrApi.message = "正在把 Battle.net 资料链接转换为 SC2 Pulse 账号...";
+    broadcast();
+    const resolved = await fetchSc2PulseToonHandleByQuery(toonHandle);
+    if (!resolved) {
+      state.mmrApi = {
+        ...state.mmrApi,
+        status: "not-found",
+        message: "没有从 Battle.net 资料链接找到 SC2 Pulse 账号，已保留原 MMR",
+        lastTriedAt: Date.now(),
+        source: "sc2pulse"
+      };
+      return null;
+    }
+    toonHandle = resolved;
+    mmrApiConfig.toonHandle = resolved;
+    mmrApiConfig.preferReplaySelf = false;
+    writeMmrApiConfig(mmrApiConfig);
+    state.mmrApi.toonHandle = resolved;
+  }
+  const result = await fetchSc2PulseMmr(toonHandle, race);
+  if (!result?.rating) {
+    const isCn = /^5-S2-/i.test(toonHandle);
+    state.mmrApi = {
+      ...state.mmrApi,
+      status: "not-found",
+      message: isCn ? "SC2 Pulse 当前没有国服天梯数据，已保留原 MMR" : "线上 API 暂时没有这个账号的天梯数据，已保留原 MMR",
+      lastTriedAt: Date.now(),
+      source: "sc2pulse"
+    };
+    return null;
+  }
+  state.overlay.currentMmr = String(result.rating);
+  state.mmrApi = {
+    ...state.mmrApi,
+    status: "ok",
+    message: `线上 MMR 已更新：${result.rating}`,
+    lastUpdatedAt: Date.now(),
+    lastTriedAt: Date.now(),
+    toonHandle,
+    race: result.race || race,
+    rating: result.rating,
+    source: "sc2pulse",
+    lastPlayed: result.lastPlayed || null
+  };
+  return result;
+}
+
 function resolveMmrApiToonHandle(match) {
   if (mmrApiConfig.toonHandle) return String(mmrApiConfig.toonHandle).trim();
   if (!mmrApiConfig.preferReplaySelf) return "";
@@ -717,6 +762,10 @@ function resolveMmrApiToonHandle(match) {
   const toonId = Number(self?.toonId || match?.folderToonId || 0);
   if (!region || !toonId) return "";
   return `${region}-S2-${realm}-${toonId}`;
+}
+
+function isToonHandle(value) {
+  return /^[1235]-S2-\d-\d+$/i.test(String(value || "").trim());
 }
 
 function resolveMmrApiRace(match) {
@@ -777,6 +826,23 @@ async function fetchSc2PulseMmr(toonHandle, race) {
   };
 }
 
+async function fetchSc2PulseToonHandleByQuery(query) {
+  const baseUrl = String(mmrApiConfig.baseUrl || "https://sc2pulse.nephest.com/sc2").replace(/\/$/, "");
+  const url = new URL(`${baseUrl}/api/characters`);
+  url.searchParams.set("query", query);
+  const rows = await fetchJson(url.toString(), {
+    timeoutMs: clampNumber(mmrApiConfig.timeoutMs, 3000, 30000),
+    userAgent: mmrApiConfig.userAgent
+  });
+  if (!Array.isArray(rows) || rows.length === 0) return "";
+  const character = rows[0]?.members?.character;
+  const region = normalizeRegionId(character?.region);
+  const realm = Number(character?.realm || 1);
+  const toonId = Number(character?.battlenetId || 0);
+  if (!region || !toonId) return "";
+  return `${region}-S2-${realm}-${toonId}`;
+}
+
 function fetchJson(url, options = {}) {
   return new Promise((resolve, reject) => {
     const request = https.get(url, {
@@ -814,13 +880,50 @@ function clampNumber(value, min, max) {
 
 function updateOverlayFromMatch(match, result) {
   const self = match.selfPlayers?.[0];
-  if (self?.mmr !== undefined && self?.mmr !== null) {
+  const estimated = updateCnMmrEstimate(match, result);
+  if (!estimated && self?.mmr !== undefined && self?.mmr !== null) {
     state.overlay.currentMmr = String(self.mmr);
   }
   const matchupKey = getMatchupKey(match);
   if (!matchupKey) return;
   if (result === "W") state.overlay.matchups[matchupKey].wins += 1;
   if (result === "L") state.overlay.matchups[matchupKey].losses += 1;
+}
+
+function updateCnMmrEstimate(match, result) {
+  if (!mmrApiConfig.cnMmrEstimate) return false;
+  const self = match?.selfPlayers?.[0];
+  if (normalizeRegionId(self?.region) !== 5) return false;
+  const opponent = (match.opponents || [])[0] || (match.players || []).find((player) => !player.isSelf);
+  const opponentMmr = normalizeMmrNumber(opponent?.mmr);
+  if (!opponentMmr) return false;
+  const current = normalizeMmrNumber(state.overlay.currentMmr);
+  const selfReplayMmr = normalizeMmrNumber(self?.mmr);
+  let seed = current || selfReplayMmr;
+  const suspiciousReplayMmr = !selfReplayMmr || selfReplayMmr < 1000 || Math.abs(selfReplayMmr - opponentMmr) > 1200;
+  if (!seed || (suspiciousReplayMmr && Math.abs(seed - opponentMmr) > 1200)) {
+    seed = opponentMmr + (result === "W" ? 24 : -24);
+  }
+  const score = result === "W" ? 1 : 0;
+  const expected = 1 / (1 + Math.pow(10, (opponentMmr - seed) / CN_MMR_ESTIMATE_SCALE));
+  const delta = clampNumber(mmrApiConfig.cnMmrEstimateK, 8, 80) * (score - expected);
+  const estimated = Math.round(seed + delta);
+  state.overlay.currentMmr = String(Math.max(0, estimated));
+  state.mmrApi = {
+    ...state.mmrApi,
+    status: "estimated",
+    message: `国服 MMR 估算：${estimated}（对手 ${opponentMmr}，${result === "W" ? "胜" : "负"}，公开样本校准）`,
+    source: "cn-estimate",
+    rating: estimated,
+    lastUpdatedAt: Date.now()
+  };
+  return true;
+}
+
+function normalizeMmrNumber(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number <= 0) return 0;
+  return Math.round(number);
 }
 
 function decrementMatchup(matchupKey, result) {
@@ -1098,12 +1201,13 @@ function renderPage(control) {
       }
       button { cursor: pointer; }
       button:hover { border-color: rgba(255,213,140,.86); box-shadow: 0 0 12px rgba(56,228,255,.32); }
-      .fields { display: ${control ? "grid" : "none"}; grid-template-columns: 1fr 1fr auto; gap: 10px; width: 1240px; }
+      .fields { display: ${control ? "grid" : "none"}; grid-template-columns: 1fr auto; gap: 10px; width: 1240px; }
       .ticker-fields { display: ${control ? "grid" : "none"}; grid-template-columns: 1fr auto; gap: 10px; width: 1240px; }
       .overlay-fields { display: ${control ? "grid" : "none"}; grid-template-columns: 1.2fr repeat(6, 1fr) auto; gap: 10px; width: 1240px; }
       .display-fields { display: ${control ? "grid" : "none"}; grid-template-columns: 160px 190px 1fr 120px; gap: 10px; width: 1240px; align-items: center; color: rgba(238,252,255,.82); }
       .mmr-api-fields { display: ${control ? "grid" : "none"}; grid-template-columns: 170px 170px 170px 1fr 140px auto; gap: 10px; width: 1240px; align-items: center; color: rgba(238,252,255,.82); }
-      .display-fields label, .mmr-api-fields label { min-height: 44px; display: flex; align-items: center; gap: 8px; padding: 0 12px; background: rgba(6,18,24,.72); border: 1px solid rgba(56,228,255,.32); border-radius: 6px; }
+      .estimate-fields { display: ${control ? "grid" : "none"}; grid-template-columns: 210px 160px 1fr; gap: 10px; width: 1240px; align-items: center; color: rgba(238,252,255,.82); }
+      .display-fields label, .mmr-api-fields label, .estimate-fields label { min-height: 44px; display: flex; align-items: center; gap: 8px; padding: 0 12px; background: rgba(6,18,24,.72); border: 1px solid rgba(56,228,255,.32); border-radius: 6px; }
       select { min-height: 44px; color: #eefcff; background: rgba(6,18,24,.92); border: 1px solid rgba(56,228,255,.48); border-radius: 6px; font: inherit; font-weight: 700; padding: 0 12px; }
       input[type="checkbox"] { min-height: 0; width: 18px; height: 18px; }
       input { padding: 0 12px; }
@@ -1157,8 +1261,7 @@ function renderPage(control) {
       </section>
       <section class="fields">
         <input id="titleInput" placeholder="标题" />
-        <input id="subtitleInput" placeholder="副标题" />
-        <button id="saveTitle">更新文字</button>
+        <button id="saveTitle">更新标题</button>
       </section>
       <section class="ticker-fields">
         <input id="tickerInput" placeholder="滚动字幕，可用接口 /ticker?text=你的文字 动态更新" />
@@ -1187,7 +1290,7 @@ function renderPage(control) {
       </section>
       <section class="mmr-api-fields">
         <label><input id="mmrApiEnabledInput" type="checkbox" />启用线上MMR</label>
-        <label><input id="mmrApiReplayInput" type="checkbox" />自动识别账号</label>
+        <label><input id="mmrApiReplayInput" type="checkbox" />无手动账号时自动识别</label>
         <select id="mmrApiRaceInput">
           <option value="auto">按录像种族</option>
           <option value="terran">人族</option>
@@ -1195,9 +1298,14 @@ function renderPage(control) {
           <option value="zerg">虫族</option>
           <option value="random">随机</option>
         </select>
-        <input id="mmrApiToonInput" placeholder="账号 5-S2-1-12437915，可留空" />
+        <input id="mmrApiToonInput" placeholder="账号 3-S2-1-8609924，或 battlenet:: 资料链接，可留空" />
         <input id="mmrApiRefreshInput" type="number" min="30" max="1800" step="30" placeholder="刷新秒数" />
         <button id="saveMmrApi">保存线上MMR</button>
+      </section>
+      <section class="estimate-fields">
+        <label><input id="cnMmrEstimateInput" type="checkbox" />国服MMR估算</label>
+        <input id="cnMmrKInput" type="number" min="8" max="80" step="1" placeholder="校准K值 44" />
+        <span>国服 replay 的自身 MMR 异常时，用对手 MMR 和胜负估算；默认 K=44、分差尺度=850，来自 SC2 Pulse 公开逐局变化样本，不使用你的未定级录像校准。</span>
       </section>
       <div class="replay-line" id="replayLine">回放监听启动中...</div>
       <div class="replay-line" id="mmrApiLine">线上 MMR API 未启用</div>
@@ -1212,8 +1320,7 @@ function renderPage(control) {
       });
       document.getElementById("saveTitle")?.addEventListener("click", () => {
         action("title", {
-          title: document.getElementById("titleInput").value,
-          subtitle: document.getElementById("subtitleInput").value
+          title: document.getElementById("titleInput").value
         });
       });
       document.getElementById("saveTicker")?.addEventListener("click", () => {
@@ -1229,6 +1336,9 @@ function renderPage(control) {
       });
       document.getElementById("mmrApiEnabledInput")?.addEventListener("change", () => {
         saveMmrApiConfig();
+      });
+      document.getElementById("mmrApiToonInput")?.addEventListener("input", () => {
+        syncMmrApiManualMode();
       });
       document.getElementById("showInfoLineInput")?.addEventListener("change", saveOverlay);
       document.getElementById("themeInput")?.addEventListener("change", saveOverlay);
@@ -1277,10 +1387,8 @@ function renderPage(control) {
         const pauseBtn = document.getElementById("pauseBtn");
         if (pauseBtn) pauseBtn.textContent = data.paused ? "继续 P" : "暂停 P";
         const titleInput = document.getElementById("titleInput");
-        const subtitleInput = document.getElementById("subtitleInput");
         const tickerInput = document.getElementById("tickerInput");
         if (titleInput && !titleInput.value) titleInput.value = data.title;
-        if (subtitleInput && !subtitleInput.value) subtitleInput.value = data.subtitle;
         if (tickerInput && document.activeElement !== tickerInput) tickerInput.value = data.tickerText || "";
         fillOverlayInputs(data.overlay);
         fillMmrApiInputs(data.mmrApiConfig);
@@ -1329,13 +1437,28 @@ function renderPage(control) {
         const enabledInput = document.getElementById("mmrApiEnabledInput");
         if (enabledInput && document.activeElement !== enabledInput) enabledInput.checked = !!config?.enabled;
         const replayInput = document.getElementById("mmrApiReplayInput");
-        if (replayInput && document.activeElement !== replayInput) replayInput.checked = config?.preferReplaySelf !== false;
+        const hasManualToon = !!config?.toonHandle;
+        if (replayInput && document.activeElement !== replayInput) replayInput.checked = !hasManualToon && config?.preferReplaySelf !== false;
+        if (replayInput) replayInput.disabled = hasManualToon;
         const raceInput = document.getElementById("mmrApiRaceInput");
         if (raceInput && document.activeElement !== raceInput) raceInput.value = config?.race || "auto";
         const toonInput = document.getElementById("mmrApiToonInput");
         if (toonInput && document.activeElement !== toonInput) toonInput.value = config?.toonHandle || "";
         const refreshInput = document.getElementById("mmrApiRefreshInput");
         if (refreshInput && document.activeElement !== refreshInput) refreshInput.value = Math.round((config?.refreshMs || 120000) / 1000);
+        const estimateInput = document.getElementById("cnMmrEstimateInput");
+        if (estimateInput && document.activeElement !== estimateInput) estimateInput.checked = !!config?.cnMmrEstimate;
+        const estimateKInput = document.getElementById("cnMmrKInput");
+        if (estimateKInput && document.activeElement !== estimateKInput) estimateKInput.value = config?.cnMmrEstimateK || 44;
+        syncMmrApiManualMode();
+      }
+      function syncMmrApiManualMode() {
+        const replayInput = document.getElementById("mmrApiReplayInput");
+        const toonInput = document.getElementById("mmrApiToonInput");
+        if (!replayInput || !toonInput) return;
+        const hasManualToon = !!toonInput.value.trim();
+        replayInput.disabled = hasManualToon;
+        if (hasManualToon) replayInput.checked = false;
       }
       function saveOverlay() {
         action("overlay", {
@@ -1352,12 +1475,15 @@ function renderPage(control) {
         });
       }
       function saveMmrApiConfig() {
+        const toonHandle = document.getElementById("mmrApiToonInput").value.trim();
         action("mmrApiConfig", {
           enabled: document.getElementById("mmrApiEnabledInput").checked,
-          preferReplaySelf: document.getElementById("mmrApiReplayInput").checked,
+          preferReplaySelf: toonHandle ? false : true,
           race: document.getElementById("mmrApiRaceInput").value,
-          toonHandle: document.getElementById("mmrApiToonInput").value,
-          refreshSeconds: document.getElementById("mmrApiRefreshInput").value
+          toonHandle,
+          refreshSeconds: document.getElementById("mmrApiRefreshInput").value,
+          cnMmrEstimate: document.getElementById("cnMmrEstimateInput").checked,
+          cnMmrEstimateK: document.getElementById("cnMmrKInput").value
         });
       }
       function applyDisplaySettings(overlay) {
