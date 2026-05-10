@@ -128,6 +128,7 @@ function defaults() {
     pendingReplays: [],
     replayHistory: [],
     lastMatch: null,
+    lastSelfToonHandle: "",
     mmrApi: defaultMmrApiState(),
     overlay: defaultOverlay()
   };
@@ -178,6 +179,7 @@ function normalizeState(input) {
   normalized.processedReplays = Array.isArray(normalized.processedReplays) ? normalized.processedReplays : [];
   normalized.processedReplayPaths = Array.isArray(normalized.processedReplayPaths) ? normalized.processedReplayPaths : [];
   normalized.replayHistory = Array.isArray(normalized.replayHistory) ? normalized.replayHistory : [];
+  normalized.lastSelfToonHandle = normalized.lastSelfToonHandle || getPlayerToonHandle(normalized.lastMatch?.selfPlayers?.[0]);
   normalized.mmrApi = { ...defaultMmrApiState(), ...(input.mmrApi || {}) };
   const processedKeys = new Set(normalized.processedReplays);
   const processedPaths = new Set(normalized.processedReplayPaths);
@@ -221,7 +223,7 @@ function addResult(result, replayOverride = null) {
     state.pendingReplays = state.pendingReplays.filter((item) => item.key !== replayOverride.key && item.path !== replayOverride.path);
   }
   const matchupKey = replay?.parsed ? getMatchupKey(replay.parsed) : null;
-  if (replay?.parsed) updateOverlayFromMatch(replay.parsed, result);
+  if (replay?.parsed) updateOverlayFromMatch(replay.parsed, result, replay);
   const entry = {
     result,
     at: Date.now(),
@@ -275,6 +277,7 @@ function resetStats() {
   state.processedReplays = [];
   state.processedReplayPaths = [];
   state.lastMatch = null;
+  state.lastSelfToonHandle = "";
   state.overlay = defaultOverlay();
   state.subtitle = "本次直播战况";
   state.tickerText = defaults().tickerText;
@@ -506,6 +509,8 @@ function scanLatestReplay(forceImport) {
   if (!forceImport && newest.mtimeMs < Date.now() - 2 * 60 * 1000) return;
   if (forceImport) {
     const replay = toReplayRecord(newest.path, { mtimeMs: newest.mtimeMs, size: newest.size }, true);
+    replay.forceReplayMmrSeed = true;
+    replay.recalculateOnly = hasReplayInHistory(replay);
     addPendingReplay(replay, true);
     return;
   }
@@ -580,6 +585,15 @@ function importReplayWhenStable(fullPath) {
 function addPendingReplay(replay, force = false) {
   if (!replay) return;
   if (!force && (seenReplayKeys.has(replay.key) || seenReplayPaths.has(replay.path))) return;
+  if (replay.recalculateOnly && replay.parsed?.selfResult) {
+    state.lastMatch = replay.parsed;
+    updateReplayMmrEstimate(replay.parsed, replay.parsed.selfResult, { forceReplayMmrSeed: true });
+    const selfToonHandle = getPlayerToonHandle(replay.parsed.selfPlayers?.[0]);
+    if (selfToonHandle) state.lastSelfToonHandle = selfToonHandle;
+    saveState();
+    broadcast();
+    return;
+  }
   if (replayConfig.autoRecordParsedResults && replay.parsed?.selfResult) {
     rememberReplay(replay.key);
     rememberReplayPath(replay.path);
@@ -622,6 +636,14 @@ function rememberReplayPath(replayPath) {
   if (!replayPath) return;
   seenReplayPaths.add(replayPath);
   state.processedReplayPaths = Array.from(new Set([...(state.processedReplayPaths || []), replayPath])).slice(-300);
+}
+
+function hasReplayInHistory(replay) {
+  if (!replay) return false;
+  return state.history.some((entry) => {
+    const item = entry?.replay;
+    return item && (item.key === replay.key || item.path === replay.path);
+  });
 }
 
 function clearPendingReplay() {
@@ -889,28 +911,41 @@ function clampNumber(value, min, max) {
   return Math.max(min, Math.min(max, number));
 }
 
-function updateOverlayFromMatch(match, result) {
+function updateOverlayFromMatch(match, result, replay = null) {
   const self = match.selfPlayers?.[0];
-  const estimated = updateReplayMmrEstimate(match, result);
+  const selfToonHandle = getPlayerToonHandle(self);
+  const accountChanged = !!selfToonHandle && !!state.lastSelfToonHandle && selfToonHandle !== state.lastSelfToonHandle;
+  const estimated = updateReplayMmrEstimate(match, result, {
+    forceReplayMmrSeed: !!replay?.forceReplayMmrSeed,
+    accountChanged
+  });
   if (!estimated && self?.mmr !== undefined && self?.mmr !== null) {
     state.overlay.currentMmr = String(self.mmr);
   }
+  if (selfToonHandle) state.lastSelfToonHandle = selfToonHandle;
   const matchupKey = getMatchupKey(match);
   if (!matchupKey) return;
   if (result === "W") state.overlay.matchups[matchupKey].wins += 1;
   if (result === "L") state.overlay.matchups[matchupKey].losses += 1;
 }
 
-function updateReplayMmrEstimate(match, result) {
+function updateReplayMmrEstimate(match, result, options = {}) {
   if (!mmrApiConfig.replayMmrEstimate) return false;
   const self = match?.selfPlayers?.[0];
   const opponent = (match.opponents || [])[0] || (match.players || []).find((player) => !player.isSelf);
   const opponentMmr = normalizeMmrNumber(opponent?.mmr);
   if (!opponentMmr) return false;
   const current = normalizeMmrNumber(state.overlay.currentMmr);
+  const selfReplayMmr = normalizeMmrNumber(self?.mmr);
   let seed = current;
+  let seedSource = "当前";
+  if ((options.forceReplayMmrSeed || options.accountChanged) && selfReplayMmr) {
+    seed = selfReplayMmr;
+    seedSource = options.accountChanged ? "换号rep" : "最新rep";
+  }
   if (!seed || Math.abs(seed - opponentMmr) > 1200) {
     seed = opponentMmr + (result === "W" ? 24 : -24);
+    seedSource = "对手";
   }
   const score = result === "W" ? 1 : 0;
   const expected = 1 / (1 + Math.pow(10, (opponentMmr - seed) / REPLAY_MMR_ESTIMATE_SCALE));
@@ -920,13 +955,26 @@ function updateReplayMmrEstimate(match, result) {
   state.mmrApi = {
     ...state.mmrApi,
     status: "estimated",
-    message: `Replay MMR 估算：${estimated}（起点 ${seed}，对手 ${opponentMmr}，${result === "W" ? "胜" : "负"}）`,
+    message: `Replay MMR 估算：${estimated}（${seedSource} ${seed}，对手 ${opponentMmr}，预期 ${(expected * 100).toFixed(0)}%，变化 ${delta >= 0 ? "+" : ""}${Math.round(delta)}，${result === "W" ? "胜" : "负"}）`,
     source: "replay-estimate",
     rating: estimated,
     replaySeed: seed,
+    replaySeedSource: seedSource,
+    replaySelfMmr: selfReplayMmr || null,
+    opponentMmr,
+    estimatedDelta: Math.round(delta),
+    expectedScore: Number(expected.toFixed(3)),
     lastUpdatedAt: Date.now()
   };
   return true;
+}
+
+function getPlayerToonHandle(player) {
+  const region = normalizeRegionId(player?.region);
+  const realm = Number(player?.realm || 1);
+  const toonId = Number(player?.toonId || 0);
+  if (!region || !toonId) return "";
+  return `${region}-S2-${realm}-${toonId}`;
 }
 
 function normalizeMmrNumber(value) {
@@ -1434,7 +1482,7 @@ function renderPage(control) {
         if (pauseBtn) pauseBtn.textContent = data.paused ? "继续 P" : "暂停 P";
         const titleInput = document.getElementById("titleInput");
         const tickerInput = document.getElementById("tickerInput");
-        if (titleInput && !titleInput.value) titleInput.value = data.title;
+        if (titleInput && document.activeElement !== titleInput) titleInput.value = data.title || "";
         if (tickerInput && document.activeElement !== tickerInput) tickerInput.value = data.tickerText || "";
         fillOverlayInputs(data.overlay);
         fillMmrApiInputs(data.mmrApiConfig);
