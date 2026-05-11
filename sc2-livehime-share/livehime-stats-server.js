@@ -146,6 +146,7 @@ function defaultOverlay() {
   return {
     currentMmr: "--",
     showInfoLine: true,
+    showCurrentMmr: true,
     chromeOpacity: 100,
     theme: "protoss",
     matchups: {
@@ -198,6 +199,7 @@ function mergeOverlay(input = {}) {
   const overlay = defaultOverlay();
   overlay.currentMmr = String(input.currentMmr ?? overlay.currentMmr);
   overlay.showInfoLine = input.showInfoLine !== false && input.showInfoLine !== "false" && input.showInfoLine !== "0";
+  overlay.showCurrentMmr = input.showCurrentMmr !== false && input.showCurrentMmr !== "false" && input.showCurrentMmr !== "0";
   overlay.chromeOpacity = clampNumber(input.chromeOpacity ?? overlay.chromeOpacity, 0, 100);
   overlay.theme = normalizeTheme(input.theme ?? overlay.theme);
   for (const key of Object.keys(overlay.matchups)) {
@@ -666,12 +668,13 @@ function buildDetailMatchText(match) {
 
 function buildOverlayLine() {
   const overlay = mergeOverlay(state.overlay);
-  return [
-    `当前MMR ${overlay.currentMmr || "--"}`,
+  const parts = [
     `vT ${formatScore(overlay.matchups.vT)}`,
     `vZ ${formatScore(overlay.matchups.vZ)}`,
     `vP ${formatScore(overlay.matchups.vP)}`
-  ].join(" | ");
+  ];
+  if (overlay.showCurrentMmr !== false) parts.unshift(`当前MMR ${overlay.currentMmr || "--"}`);
+  return parts.join(" | ");
 }
 
 function formatScore(score) {
@@ -1028,6 +1031,7 @@ function updateOverlayInfo(body) {
   state.overlay = mergeOverlay({
     currentMmr: body.currentMmr,
     showInfoLine: body.showInfoLine,
+    showCurrentMmr: body.showCurrentMmr,
     chromeOpacity: body.chromeOpacity,
     theme: body.theme,
     matchups: {
@@ -1286,7 +1290,7 @@ function renderPage(control) {
       .fields { display: ${control ? "grid" : "none"}; grid-template-columns: 1fr auto; gap: 10px; width: 1240px; }
       .ticker-fields { display: ${control ? "grid" : "none"}; grid-template-columns: 1fr auto; gap: 10px; width: 1240px; }
       .overlay-fields { display: ${control ? "grid" : "none"}; grid-template-columns: 1.2fr repeat(6, 1fr) auto; gap: 10px; width: 1240px; }
-      .display-fields { display: ${control ? "grid" : "none"}; grid-template-columns: 160px 190px 1fr 120px; gap: 10px; width: 1240px; align-items: center; color: rgba(238,252,255,.82); }
+      .display-fields { display: ${control ? "grid" : "none"}; grid-template-columns: 160px 160px 190px 1fr 120px; gap: 10px; width: 1240px; align-items: center; color: rgba(238,252,255,.82); }
       .mmr-api-fields { display: ${control ? "grid" : "none"}; grid-template-columns: 170px 170px 170px 1fr 140px auto; gap: 10px; width: 1240px; align-items: center; color: rgba(238,252,255,.82); }
       .estimate-fields { display: ${control ? "grid" : "none"}; grid-template-columns: 210px 160px 140px auto 1fr; gap: 10px; width: 1240px; align-items: center; color: rgba(238,252,255,.82); }
       .display-fields label, .mmr-api-fields label, .estimate-fields label { min-height: 44px; display: flex; align-items: center; gap: 8px; padding: 0 12px; background: rgba(6,18,24,.72); border: 1px solid rgba(56,228,255,.32); border-radius: 6px; }
@@ -1361,6 +1365,7 @@ function renderPage(control) {
       </section>
       <section class="display-fields">
         <label><input id="showInfoLineInput" type="checkbox" />显示底部信息</label>
+        <label><input id="showCurrentMmrInput" type="checkbox" />显示当前MMR</label>
         <select id="themeInput">
           <option value="protoss">神族样式</option>
           <option value="terran">人族样式</option>
@@ -1435,6 +1440,7 @@ function renderPage(control) {
         syncMmrApiManualMode();
       });
       document.getElementById("showInfoLineInput")?.addEventListener("change", saveOverlay);
+      document.getElementById("showCurrentMmrInput")?.addEventListener("change", saveOverlay);
       document.getElementById("themeInput")?.addEventListener("change", saveOverlay);
       document.getElementById("chromeOpacityInput")?.addEventListener("input", () => {
         document.getElementById("chromeOpacityLabel").textContent = "透明度 " + document.getElementById("chromeOpacityInput").value + "%";
@@ -1520,6 +1526,8 @@ function renderPage(control) {
         }
         const showInput = document.getElementById("showInfoLineInput");
         if (showInput && document.activeElement !== showInput) showInput.checked = overlay?.showInfoLine !== false;
+        const showMmrInput = document.getElementById("showCurrentMmrInput");
+        if (showMmrInput && document.activeElement !== showMmrInput) showMmrInput.checked = overlay?.showCurrentMmr !== false;
         const themeInput = document.getElementById("themeInput");
         if (themeInput && document.activeElement !== themeInput) themeInput.value = overlay?.theme || "protoss";
         const chromeInput = document.getElementById("chromeOpacityInput");
@@ -1565,6 +1573,7 @@ function renderPage(control) {
           vPWins: document.getElementById("vPWinsInput").value,
           vPLosses: document.getElementById("vPLossesInput").value,
           showInfoLine: document.getElementById("showInfoLineInput").checked,
+          showCurrentMmr: document.getElementById("showCurrentMmrInput").checked,
           chromeOpacity: document.getElementById("chromeOpacityInput").value,
           theme: document.getElementById("themeInput").value
         });
